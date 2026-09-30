@@ -1,0 +1,15 @@
+# MediaPipe Tasks (brings opencv-contrib-python and numpy with it)
+mediapipe>=1.0
+anthropic>=1.9
+pillow>=10.1
+librosa>=0.10
+soundfile>=0.12
+scipy>=1.11
+# ffmpeg binary, used when ffmpeg is not already on PATH
+imageio-ffmpeg>=0.5
+
+# Optional: automatic subtitles when you have no .srt (python -m facial VIDEO --whisper small)
+# faster-whisper>=1.0
+
+# Development
+pytest>=8
