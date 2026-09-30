@@ -3,7 +3,7 @@
 // to a judge. The judge is the facial server (self-hosted) or runs in the browser.
 
 import { buildSample, HandTracker } from "./perception.js";
-import { Hud, STRINGS, handLabel } from "./hud.js";
+import { Hud, STRINGS, handLabel, judgeLabel } from "./hud.js";
 import { clipBaseline, shotType, windowFeatures } from "./features.js";
 import { VoiceAnalyzer, resampleTo16k } from "./voice.js";
 import { BrowserJudge } from "./judge.js";
@@ -139,6 +139,7 @@ class ServerBackend {
     const s = await this.api("api/live/sessions", { method: "POST", body: { lang: opts.lang, context: opts.context } });
     this.id = s.id;
     this.name = s.judge;
+    this.label = s.label || s.judge;
   }
   async judge(win) {
     const body = { start: win.start, end: win.end, samples: win.samples, aspect: win.aspect, transcript: win.transcript };
@@ -158,9 +159,11 @@ class LocalBackend {
     this.judgeImpl = new BrowserJudge({
       provider: opts.provider, apiKey: opts.apiKey, model: opts.model, baseUrl: opts.baseUrl,
       lang: opts.lang, context: opts.context, handLabel: (h) => handLabel(h, opts.lang), onNotice,
+      jev: opts.jev ? { route: opts.jevVia, apiKey: opts.jevKey, model: opts.jevModel } : null,
     });
   }
   get name() { return this.judgeImpl.name; }
+  get label() { return this.judgeImpl.label; }
   async open() {}
   async judge(win) {
     if (win.pcm && win.pcm.length) this.voice.push(resampleTo16k(win.pcm, win.sr), win.audioT0 ?? win.start);
@@ -327,7 +330,7 @@ export class LiveEngine {
 
   /**
    * opts: {file?: File, segments?: [{start,end,text}], lang, context, facing, mic, speech, skeleton,
-   *        windowSec, provider, apiKey, model, baseUrl, record}
+   *        windowSec, provider, apiKey, model, baseUrl, jev, jevVia, jevKey, jevModel, record}
    */
   async start(opts) {
     this.opts = { lang: "en", context: "", facing: "user", mic: true, speech: true, skeleton: false, windowSec: 5, ...opts };
@@ -366,6 +369,7 @@ export class LiveEngine {
     this.backend = this.mode === "server" ? new ServerBackend(this.api) : new LocalBackend(this.opts, (m) => this.status(m));
     await this.backend.open(this.opts);
     this.judgeName = this.backend.name;
+    this.judgeLabel = this.backend.name === "heuristic" ? this.s.rules : this.backend.label;
 
     this.t0 = performance.now();
     this.windowStart = 0;
@@ -634,7 +638,8 @@ export class LiveEngine {
       shot: shotType(latest && latest.face ? latest.face.size : null),
       hands: this.liveHands(t).map((h) => ({ label: handLabel(h, this.opts.lang), score: h.score, anchor: h.anchor && toPx(h.anchor) })),
       subtitle: this.subtitleAt(t),
-      judge: this.hud.judgments.length ? this.hud.judgments[this.hud.judgments.length - 1].source : this.judgeName,
+      judge: this.hud.judgments.length ? judgeLabel(this.hud.judgments[this.hud.judgments.length - 1], this.s.rules)
+        : this.judgeLabel,
       status,
       skeleton,
     }, this.isFile ? u : undefined);

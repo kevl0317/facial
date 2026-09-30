@@ -157,7 +157,7 @@ body.running .rec-dot { border-radius: 5px; background: var(--coral); animation:
 .sheet { display: grid; gap: 14px; }
 .sheet .seg { display: flex; }
 .sheet .seg button { flex: 1; }
-.toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.toggles { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 10px; }
 .toggle {
   display: grid; justify-items: center; gap: 4px; border-radius: 16px; padding: 10px 4px; font-size: 13px; font-weight: 600;
 }
@@ -167,7 +167,9 @@ body.running .rec-dot { border-radius: 5px; background: var(--coral); animation:
 .ai-box { display: grid; gap: 10px; }
 .key-row { display: flex; align-items: center; gap: 10px; }
 .key-row .field { flex: 1; min-width: 0; }
-.ai-box > .field, .ai-box > .combo { width: calc(100% - 32px); margin-left: 32px; }
+.ai-box > .field, .ai-box > .combo, .jev-box > .field { width: calc(100% - 32px); margin-left: 32px; }
+.jev-box { display: grid; gap: 10px; padding-top: 12px; border-top: 2.5px dashed var(--ink-soft); }
+.toggle[data-setting="jev"][aria-pressed="true"] { background: var(--yellow); }
 .combo { position: relative; }
 .combo .field { width: 100%; padding-right: 46px; }
 .combo-btn {
