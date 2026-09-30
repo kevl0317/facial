@@ -15,3 +15,7 @@ models/
 *_annotated.mp4
 *_analysis.json
 *.png
+
+# static build output (python -m facial build-site)
+site/
+!facial/web/icons/*.png

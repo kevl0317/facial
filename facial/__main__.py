@@ -2,6 +2,7 @@
 
     python -m facial VIDEO [options]     annotate a video file
     python -m facial serve [options]     web GUI: live camera (phone/PC) + video files
+    python -m facial build-site          the same GUI as a static site (runs fully in the browser)
 """
 
 from __future__ import annotations
@@ -69,6 +70,15 @@ def parse_serve_args(argv) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "build-site":
+        from .webbuild import build_site
+
+        p = argparse.ArgumentParser(prog="python -m facial build-site",
+                                    description="Build the server-free web app as a static site (e.g. for GitHub Pages).")
+        p.add_argument("--out", type=Path, default=Path("site"), help="output folder (default: site)")
+        out = build_site(p.parse_args(argv[1:]).out)
+        print(f"Static site written to {out}", file=sys.stderr)
+        return 0
     if argv and argv[0] == "serve":
         from .server import serve
 

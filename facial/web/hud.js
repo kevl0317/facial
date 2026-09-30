@@ -5,12 +5,12 @@ export const STRINGS = {
   en: {
     left: "Left hand", right: "Right hand", verdict: "Verdict", confidence: "Confident", focus: "Focused",
     tension: "Tense", intent: "Intent", arc: "Mood", vision: "VISION", rules: "Rules",
-    footer: "MediaPipe · {judge} · demo only", collecting: "Warming up", judging: "Thinking", live: "LIVE",
+    footer: "MediaPipe · {judge} · demo only", collecting: "Warming up", judging: "Thinking", live: "LIVE", playing: "PLAYING",
   },
   zh: {
     left: "左手", right: "右手", verdict: "综合判定", confidence: "自信", focus: "专注",
     tension: "紧张", intent: "意图", arc: "情绪弧", vision: "VISION", rules: "规则",
-    footer: "MediaPipe · {judge} · 仅供演示", collecting: "准备中", judging: "判定中", live: "直播",
+    footer: "MediaPipe · {judge} · 仅供演示", collecting: "准备中", judging: "判定中", live: "直播", playing: "播放中",
   },
 };
 const SHAPES = {
@@ -123,9 +123,9 @@ export class Hud {
    *         status: {kind: "live"|"judging"|"collecting", text}, skeleton: {hands, face} | null}
    * Coordinates are CSS pixels; the caller sets the device-pixel transform.
    */
-  draw(ctx, W, H, state) {
+  draw(ctx, W, H, state, uOverride) {
     const portrait = W < H;
-    const u = portrait ? Math.min(1.3, W / 360) : Math.max(0.75, Math.min(1.6, H / 720));
+    const u = uOverride ?? (portrait ? Math.min(1.3, W / 360) : Math.max(0.75, Math.min(1.6, H / 720)));
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
@@ -150,7 +150,8 @@ export class Hud {
     const cy = 24 * u;
     let x = 14 * u;
     x += pill(ctx, x, cy, `${state.t.toFixed(1)}s`, u, { size: 12, weight: 600 }) + 6 * u;
-    x += pill(ctx, x, cy, `W${this.judgments.length + 1}`, u, { size: 12, fill: T.blue, color: T.white }) + 6 * u;
+    const win = Math.min(this.judgments.length + 1, state.total || Infinity);
+    x += pill(ctx, x, cy, state.total ? `W${win}/${state.total}` : `W${win}`, u, { size: 12, fill: T.blue, color: T.white }) + 6 * u;
     pill(ctx, x, cy, state.shot, u, { size: 12, weight: 600 });
 
     const st = state.status;

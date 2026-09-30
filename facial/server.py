@@ -131,6 +131,14 @@ def create_app(token: str | None = None, judge: str = "claude", model: str = DEF
     def index():
         return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
+    @app.get("/sw.js")
+    def service_worker():
+        return FileResponse(WEB_DIR / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        return FileResponse(WEB_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+
     @app.get("/api/info", dependencies=auth)
     def info():
         try:
