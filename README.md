@@ -77,7 +77,7 @@ The whole app also runs **entirely in the browser**, with no server:
 - MediaPipe runs on the device.
 - The five fields, the voice analysis and the judge are ported to JavaScript. `tests/test_web.py` checks the port against the Python pipeline.
 - By default the judge is the transparent rule set. In Settings, pick a provider (Claude, GPT, DeepSeek, Gemini, and the rest) and paste your own API key to get AI verdicts. The model field suggests the models your key can use, and the key field turns green once the provider accepts it. Keys are stored only in that browser and sent only to the provider you picked.
-- Some providers don't accept requests straight from a web page (CORS). If one of them can't be reached, the app says so and falls back to the rules. OpenRouter works from the browser and covers most models; the self-hosted server below works with every provider.
+- Some providers don't accept requests straight from a web page (CORS). If one of them can't be reached, the app says so and falls back to the rules. Then try OpenRouter, which offers most models under one key, or use the self-hosted server below, which works with every provider.
 - **Live** uses the phone or laptop camera.
 - **Video** plays an uploaded file through the same engine, pausing for verdicts when needed, and saves an annotated recording plus the JSON.
 - The site is installable (add to home screen). A service worker caches the ~30 MB of models, so later visits start instantly and work offline.
