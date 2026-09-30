@@ -67,7 +67,28 @@ function gesture(S, start) {
     const [score, t, h] = best.get(k);
     const share = S.filter((s) => s.hands.some((x) => handKey(x) === k)).length / n;
     out.dominant = { hand: h.side, shape: h.shape, facing: h.facing, axis: h.axis, score: r(score, 2), share: r(share, 2), at_s: r(t - start, 1) };
+
+    // The other hand (a different track), when it is up for at least a fifth of the window.
+    const main = h.track;
+    const others = new Map(), example = new Map();
+    for (const s of withHands) {
+      for (const x of s.hands) {
+        if (x.track === main) continue;
+        const k2 = handKey(x);
+        others.set(k2, (others.get(k2) || 0) + x.score * (1 + Math.min(x.speed || 0, 4)));
+        if (!example.has(k2)) example.set(k2, x);
+      }
+    }
+    if (others.size) {
+      const k2 = [...others.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const share2 = S.filter((s) => s.hands.some((x) => handKey(x) === k2 && x.track !== main)).length / n;
+      if (share2 >= 0.2) {
+        const x = example.get(k2);
+        out.second = { hand: x.side, shape: x.shape, facing: x.facing, axis: x.axis, share: r(share2, 2) };
+      }
+    }
   }
+  out.two_hands = r(S.filter((s) => s.hands.length >= 2).length / n, 2);
 
   const runs = [];
   for (const s of S) {
