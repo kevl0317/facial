@@ -186,10 +186,11 @@ export class LiveEngine {
     this.opts = { lang: "en", context: "", facing: "user", mic: true, speech: true, skeleton: false, windowSec: 5, ...opts };
     this.s = STRINGS[this.opts.lang];
     this.hud = new Hud(this.opts.lang);
-    this.status("Loading MediaPipe…");
+    this.status("Loading…");
     this.tasks = await loadTasks();
+    try { await document.fonts.load("700 20px Fredoka"); } catch { /* system font fallback */ }
 
-    this.status("Starting camera…");
+    this.status("Opening camera…");
     this.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: this.opts.facing, width: { ideal: 1280 }, height: { ideal: 720 } },
       // Raw audio: echo cancellation / noise suppression / AGC would distort loudness and pitch.
@@ -241,7 +242,7 @@ export class LiveEngine {
     try { this.wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* optional */ }
 
     this.running = true;
-    this.status(`Running · MediaPipe on ${this.tasks.delegate}${this.speech ? "" : " · no speech-to-text in this browser"}`);
+    this.status(this.opts.speech && !this.speech ? "No subtitles in this browser" : "");
     this.loop();
   }
 
@@ -256,7 +257,6 @@ export class LiveEngine {
     try { await this.wakeLock?.release(); } catch { /* released */ }
     if (this.sessionId) this.api(`/api/live/sessions/${this.sessionId}`, { method: "DELETE" }).catch(() => {});
     this.sessionId = null;
-    this.status("Stopped");
   }
 
   loop() {
@@ -265,7 +265,7 @@ export class LiveEngine {
       this.step();
     } catch (err) {
       console.error(err);
-      this.status(`Error: ${err.message}`);
+      this.status(err.message);
     }
     this.raf = requestAnimationFrame(() => this.loop());
   }
@@ -333,7 +333,7 @@ export class LiveEngine {
     }
     const ctx = c.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#0b0f19";
+    ctx.fillStyle = "#2a2640";
     ctx.fillRect(0, 0, W, H);
 
     const v = this.video;
@@ -360,9 +360,10 @@ export class LiveEngine {
       skeleton = { hands: latest.hands.map((h) => h.pts.map(toPx)), face: faceBox };
     }
     let status;
-    if (this.inFlight) status = `${this.s.judging} W${this.windowCount + 1}…`;
-    else if (!this.hud.judgments.length) status = `${this.s.collecting} ${Math.max(0, this.opts.windowSec - t).toFixed(0)}s`;
-    else status = `● ${this.s.live}  ${this.fps} fps`;
+    if (this.inFlight) status = { kind: "judging", text: `${this.s.judging}…` };
+    else if (!this.hud.judgments.length) {
+      status = { kind: "collecting", text: `${this.s.collecting} ${Math.max(0, this.opts.windowSec - t).toFixed(0)}s` };
+    } else status = { kind: "live", text: `${this.s.live} · ${this.fps} fps` };
 
     this.hud.draw(ctx, W, H, {
       t,
@@ -393,7 +394,7 @@ export class LiveEngine {
       this.hud.addJudgment(res.judgment);
       this.onWindow(res);
     } catch (err) {
-      this.status(`Window not judged: ${err.message}`);
+      this.status(`Verdict failed: ${err.message}`);
     } finally {
       this.inFlight = false;
     }

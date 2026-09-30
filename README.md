@@ -21,17 +21,19 @@ video file ──▶ MediaPipe (Python) · librosa · subtitles ──▶ 5 fiel
                                         (python -m facial serve  or  python -m facial VIDEO)
 ```
 
-What the overlay shows:
+What the overlay shows (same cartoon look live and in rendered videos):
 
 | Where | What |
 |---|---|
-| top strip | `t=027.8  WIN 10/10  shot=close-up`: time, current window, shot type; live mode adds status and fps |
-| top left | live hand label, e.g. **Left hand · open palm (palm up)**, the MediaPipe confidence, and a callout line to the hand |
-| right panel | **Verdict**: Confident / Focused / Tense bars, Intent → label + certainty, and the emotion arc (one square per window) |
-| bottom left | `W10 > reading…` from the judgment layer, plus the most telling quote |
-| bottom | subtitles and a "not calibrated, demo only" footer |
+| top chips | time, current window, shot type; live mode adds a LIVE / Thinking status chip |
+| top left | the hand label sticker, e.g. **Left hand · open palm (palm up)**, its MediaPipe confidence, and a pointer to the hand |
+| verdict card | Confident / Focused / Tense bars, the intent with its certainty, and Mood dots (one per window, coral → yellow → mint) |
+| speech bubble | the judgment layer's reading for the window, with the most telling quote highlighted |
+| bottom | comic-style subtitles and a small "demo only" tag |
 
 Language `zh` switches the overlay and Claude's commentary to Chinese (综合判定 / 自信 / 专注 / 紧张 / 意图 / 情绪弧).
+
+The GUI opens with a short hand-drawn animation (12 fps, frame by frame: the glove sketches itself in, waves, then an iris wipe opens the app; tap to skip). The theme uses the bundled [Fredoka](https://github.com/hafontia/Fredoka-One) font (SIL Open Font License, `facial/web/fonts/OFL.txt`).
 
 ## Setup
 
@@ -152,6 +154,7 @@ facial/
   render.py      Pillow HUD overlay and video writing
   media.py       ffmpeg helpers (clip, audio extraction, H.264 writer)
   models.py      MediaPipe model + web runtime download
-  web/           the GUI: index.html, app.js, live.js (camera engine), perception.js, hud.js
+  web/           the GUI: index.html, style.css, app.js, live.js (camera engine), perception.js,
+                 hud.js (live overlay), intro.js (opening animation), hand.js (the cartoon glove), fonts/
 tests/           unit + API tests (python -m pytest)
 ```

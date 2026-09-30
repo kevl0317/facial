@@ -1,3 +1,5 @@
+import { handSvg } from "./hand.js";
+import { playIntro } from "./intro.js";
 import { LiveEngine, loadTasks } from "./live.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -6,13 +8,18 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
 };
 
+playIntro($("#intro"));
+for (const el of document.querySelectorAll("[data-mascot]")) {
+  el.innerHTML = handSvg({ size: Number(el.dataset.mascot), cls: el.dataset.mascotClass || "" });
+}
+
 // Access key from the URL the server printed (?k=...), remembered in this browser.
 const params = new URLSearchParams(location.search);
 let key = params.get("k") ?? store.get("facial-key") ?? "";
 if (params.has("k")) store.set("facial-key", key);
 
 function askKey() {
-  const entered = prompt("Access key (the k=... part of the URL the server printed):", key);
+  const entered = prompt("Access key (the k=... part of the server's link):", key);
   if (entered !== null) { key = entered.trim(); store.set("facial-key", key); }
 }
 
@@ -36,11 +43,24 @@ const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(
 function windowItem(win, j) {
   const li = document.createElement("li");
   li.innerHTML = `
-    <div class="head"><span>W${win.window} · ${fmt(win.start)}–${fmt(win.end)}</span>
-      <span>conf ${j.confidence.toFixed(2)} · focus ${j.focus.toFixed(2)} · tense ${j.tension.toFixed(2)}</span></div>
-    <div><span class="intent">${esc(j.intent)}</span> — ${esc(j.reading)}</div>
-    ${j.quote ? `<div class="quote">“${esc(j.quote)}”</div>` : ""}`;
+    <div class="head"><span class="w">W${win.window}</span><span class="intent">${esc(j.intent)}</span>
+      <span class="time">${fmt(win.start)}–${fmt(win.end)}</span></div>
+    <div class="reading">${esc(j.reading)}</div>
+    ${j.quote ? `<div class="quote">“${esc(j.quote)}”</div>` : ""}
+    <div class="scores"><span class="s-c" title="Confident">C ${j.confidence.toFixed(2)}</span>
+      <span class="s-f" title="Focused">F ${j.focus.toFixed(2)}</span>
+      <span class="s-t" title="Tense">T ${j.tension.toFixed(2)}</span></div>`;
   return li;
+}
+
+// Segmented controls: `data-setting` (live settings) or `data-field` (form field).
+function initSeg(seg, value, onChange) {
+  const set = (v) => {
+    for (const b of seg.querySelectorAll("button")) b.setAttribute("aria-checked", String(b.dataset.value === v));
+    onChange(v);
+  };
+  seg.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) set(b.dataset.value); });
+  set(value);
 }
 
 // ---------------------------------------------------------------------------------- tabs
@@ -57,43 +77,66 @@ for (const btn of document.querySelectorAll(".tabs button")) {
 
 // ---------------------------------------------------------------------------------- info
 api("/api/info").then((info) => {
-  $("#judgeBadge").textContent = info.judge === "claude" ? `Judge: Claude · ${info.model}` : "Judge: rules (no Claude)";
+  $("#judgeChip").hidden = false;
+  $("#judgeChip span").textContent = info.judge === "claude" ? "Claude" : "Rules";
+  $("#judgeChip").title = info.judge === "claude" ? info.model : "Rule-based scoring (no Claude)";
   $("#whisperBox").disabled = !info.whisper;
-  if (!info.whisper) $("#whisperBox").parentElement.title = "Install faster-whisper on the server to enable";
+  if (!info.whisper) $("#whisperBox").parentElement.title = "Install faster-whisper on the server";
   const onThisComputer = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
   if (info.phone_url && onThisComputer) {
-    $("#phoneCard").hidden = false;
-    $("#phoneUrl").textContent = info.phone_url;
     fetch(`/api/qr.svg?data=${encodeURIComponent(info.phone_url)}`, { headers: { "X-Facial-Key": key } })
       .then((r) => (r.ok ? r.blob() : null))
-      .then((b) => { if (b) $("#phoneQr").src = URL.createObjectURL(b); else $("#phoneQr").hidden = true; });
+      .then((b) => {
+        if (!b) return;
+        $("#phoneQr").src = URL.createObjectURL(b);
+        $("#phoneCard").title = info.phone_url;
+        $("#phoneCard").hidden = false;
+      });
   }
-}).catch((err) => { $("#liveStatus").textContent = `Server: ${err.message}`; });
+}).catch((err) => { toast(err.message); });
 
-// ---------------------------------------------------------------------------------- live
-const settings = ["facing", "lang", "context", "windowSec", "mic", "speech", "skeleton"];
-for (const id of settings) {
-  const el = $(`#${id}`);
-  const saved = store.get(`facial-${id}`);
-  if (saved !== null) { if (el.type === "checkbox") el.checked = saved === "1"; else el.value = saved; }
-  el.addEventListener("change", () => store.set(`facial-${id}`, el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value));
+// ---------------------------------------------------------------------------------- live settings
+const live = {
+  lang: store.get("facial-lang") || "en",
+  facing: store.get("facial-facing") || "user",
+  mic: store.get("facial-mic") !== "0",
+  speech: store.get("facial-speech") !== "0",
+  skeleton: store.get("facial-skeleton") === "1",
+  windowSec: Number(store.get("facial-windowSec") || 5),
+  context: store.get("facial-context") || "",
+};
+const save = (k, v) => { live[k] = v; store.set(`facial-${k}`, typeof v === "boolean" ? (v ? "1" : "0") : String(v)); };
+
+initSeg($('.seg[data-setting="lang"]'), live.lang, (v) => save("lang", v));
+for (const t of document.querySelectorAll(".toggle")) {
+  const k = t.dataset.setting;
+  t.setAttribute("aria-pressed", String(live[k]));
+  t.addEventListener("click", () => {
+    const on = t.getAttribute("aria-pressed") !== "true";
+    t.setAttribute("aria-pressed", String(on));
+    save(k, on);
+  });
 }
-const syncWindowOut = () => { $("#windowOut").textContent = `${$("#windowSec").value} s`; };
-$("#windowSec").addEventListener("input", syncWindowOut);
-syncWindowOut();
+$("#windowSec").value = live.windowSec;
+const syncWindow = () => { $("#windowOut").textContent = `${$("#windowSec").value}s`; save("windowSec", Number($("#windowSec").value)); };
+$("#windowSec").addEventListener("input", syncWindow);
+syncWindow();
+$("#context").value = live.context;
+$("#context").addEventListener("change", () => save("context", $("#context").value.trim()));
 
 $("#settingsBtn").addEventListener("click", () => {
   const open = $("#settings").classList.toggle("open");
   $("#settingsBtn").setAttribute("aria-expanded", String(open));
 });
 
-const liveStatus = (msg) => { $("#liveStatus").textContent = msg; };
+function toast(msg) { $("#liveStatus").textContent = msg || ""; }
 
+// ---------------------------------------------------------------------------------- live run
 async function startLive() {
   const btn = $("#startBtn");
   btn.disabled = true;
   if (!window.isSecureContext || !navigator.mediaDevices) {
-    liveStatus("Camera access needs HTTPS (or localhost). Open the https:// URL the server printed.");
+    toast("Open the https:// link to use the camera");
     btn.disabled = false;
     return;
   }
@@ -101,22 +144,19 @@ async function startLive() {
   engine = new LiveEngine({
     canvas: $("#stage"),
     api,
-    onStatus: liveStatus,
+    onStatus: toast,
     onWindow: ({ window: win, judgment }) => $("#windowLog").prepend(windowItem(win, judgment)),
   });
   try {
-    await engine.start({
-      facing: $("#facing").value, lang: $("#lang").value, context: $("#context").value.trim(),
-      windowSec: Number($("#windowSec").value), mic: $("#mic").checked, speech: $("#speech").checked,
-      skeleton: $("#skeleton").checked,
-    });
+    await engine.start({ ...live });
     document.body.classList.add("running");
     $("#settings").classList.remove("open");
-    btn.textContent = "Stop";
-    btn.classList.add("stop");
+    $("#settingsBtn").setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-label", "Stop");
+    $(".rec-label").textContent = "Stop";
   } catch (err) {
     console.error(err);
-    liveStatus(err.name === "NotAllowedError" ? "Camera/microphone permission was denied." : `Could not start: ${err.message}`);
+    toast(err.name === "NotAllowedError" ? "Camera permission denied" : `Couldn't start: ${err.message}`);
     await engine.stop().catch(() => {});
   } finally {
     btn.disabled = false;
@@ -126,17 +166,46 @@ async function startLive() {
 async function stopLive() {
   await engine.stop();
   document.body.classList.remove("running");
-  $("#startBtn").textContent = "Start";
-  $("#startBtn").classList.remove("stop");
+  $("#startBtn").setAttribute("aria-label", "Start");
+  $(".rec-label").textContent = "Start";
+  toast("");
 }
 
 $("#startBtn").addEventListener("click", () => (engine && engine.running ? stopLive() : startLive()));
+$("#flipBtn").addEventListener("click", async () => {
+  save("facing", live.facing === "user" ? "environment" : "user");
+  if (engine && engine.running) { await stopLive(); await startLive(); }
+});
 
 // Warm MediaPipe up in the background so Start is quick.
 const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 800));
-idle(() => loadTasks().catch((err) => liveStatus(`MediaPipe failed to load: ${err.message}`)));
+idle(() => loadTasks().catch((err) => toast(`MediaPipe failed to load: ${err.message}`)));
 
 // ---------------------------------------------------------------------------------- video file
+const STAGES = { prepare: "Preparing", perception: "Tracking", judge: "Judging", render: "Drawing" };
+let fileLang = live.lang;
+initSeg($('.seg[data-field="lang"]'), fileLang, (v) => { fileLang = v; $('input[name="lang"]').value = v; });
+
+const drop = $("#drop");
+function showVideoName() {
+  const f = $("#videoInput").files[0];
+  drop.classList.toggle("has-file", Boolean(f));
+  $("#dropText").textContent = f ? f.name : "Drop a video";
+  $("#dropSub").textContent = f ? `${(f.size / 1e6).toFixed(1)} MB` : "or tap to choose";
+}
+$("#videoInput").addEventListener("change", showVideoName);
+for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); });
+for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, () => drop.classList.remove("drag"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) { $("#videoInput").files = e.dataTransfer.files; showVideoName(); }
+});
+$("#srtInput").addEventListener("change", () => {
+  const f = $("#srtInput").files[0];
+  $("#srtChip").classList.toggle("has-file", Boolean(f));
+  $("#srtText").textContent = f ? f.name : "Subtitles";
+});
+
 function upload(form, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -165,21 +234,26 @@ function setBar(frac) {
 
 $("#jobForm").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (!$("#videoInput").files.length) {
+    drop.classList.remove("shake");
+    void drop.offsetWidth; // restart the animation
+    drop.classList.add("shake");
+    return;
+  }
   const form = new FormData(e.target);
   for (const k of ["start", "end"]) if (!form.get(k)) form.delete(k);
   if (!form.get("srt") || !form.get("srt").size) form.delete("srt");
   $("#jobForm").hidden = true;
   $("#jobProgress").hidden = false;
-  $("#jobTitle").textContent = "Uploading…";
   $("#jobLog").textContent = "";
+  setBar(0);
   try {
     const job = await upload(form, (f) => { setBar(f * 0.05); $("#jobStage").textContent = `Uploading ${Math.round(f * 100)}%`; });
-    $("#jobTitle").textContent = "Processing…";
     await pollJob(job.id);
   } catch (err) {
-    $("#jobTitle").textContent = "Failed";
-    $("#jobStage").textContent = err.message;
+    $("#jobProgress").hidden = true;
     $("#jobForm").hidden = false;
+    $("#dropSub").textContent = `Failed: ${err.message}`;
   }
 });
 
@@ -187,7 +261,7 @@ async function pollJob(id) {
   for (;;) {
     const job = await api(`/api/jobs/${id}`);
     setBar(job.progress);
-    $("#jobStage").textContent = job.status === "queued" ? "Waiting for the previous job…" : `${job.stage} · ${Math.round(job.progress * 100)}%`;
+    $("#jobStage").textContent = job.status === "queued" ? "Waiting…" : `${STAGES[job.stage] || "Working"} ${Math.round(job.progress * 100)}%`;
     $("#jobLog").textContent = job.log.join("\n");
     if (job.status === "done") return showResult(job);
     if (job.status === "error") throw new Error(job.error);
@@ -220,5 +294,8 @@ $("#newJob").addEventListener("click", () => {
   $("#jobResult").hidden = true;
   $("#resultVideo").removeAttribute("src");
   $("#jobForm").reset();
+  $('input[name="lang"]').value = fileLang;
+  showVideoName();
+  $("#srtInput").dispatchEvent(new Event("change"));
   $("#jobForm").hidden = false;
 });

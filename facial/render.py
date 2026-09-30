@@ -1,4 +1,8 @@
-"""Draw the analysis HUD onto video frames with Pillow."""
+"""Draw the analysis HUD onto video frames with Pillow.
+
+Same cartoon design as the live HUD (facial/web/hud.js): white stickers with ink
+outlines and hard shadows, the bundled Fredoka font, and the shared palette.
+"""
 
 from __future__ import annotations
 
@@ -18,18 +22,14 @@ from .media import VideoInfo, VideoWriter
 
 STRINGS = {
     "en": {
-        "left": "Left hand", "right": "Right hand", "verdict": "Verdict", "fusion": "subs + voice + gesture",
-        "confidence": "Confident", "focus": "Focused", "tension": "Tense", "intent": "Intent",
-        "arc": "Emotion arc", "quote": "QUOTE", "vision": "VISION  gesture model",
-        "footer": "Gesture: MediaPipe per-frame  ·  Reading & scores: {judge}  ·  Not calibrated, demo only",
-        "rules": "rules",
+        "left": "Left hand", "right": "Right hand", "verdict": "Verdict", "confidence": "Confident",
+        "focus": "Focused", "tension": "Tense", "intent": "Intent", "arc": "Mood", "vision": "VISION",
+        "rules": "Rules", "footer": "MediaPipe · {judge} · demo only",
     },
     "zh": {
-        "left": "左手", "right": "右手", "verdict": "综合判定", "fusion": "字幕+声音+动作",
-        "confidence": "自信", "focus": "专注", "tension": "紧张", "intent": "意图",
-        "arc": "情绪弧", "quote": "引语", "vision": "VISION  手势模型",
-        "footer": "动作 MediaPipe 逐帧检测  ·  解读和评分 {judge}  ·  未经人工校准 仅供演示",
-        "rules": "规则",
+        "left": "左手", "right": "右手", "verdict": "综合判定", "confidence": "自信",
+        "focus": "专注", "tension": "紧张", "intent": "意图", "arc": "情绪弧", "vision": "VISION",
+        "rules": "规则", "footer": "MediaPipe · {judge} · 仅供演示",
     },
 }
 SHAPES = {
@@ -49,13 +49,15 @@ AXES = {
     "zh": {"horizontal": "横", "up": "竖起", "down": "下垂"},
 }
 
-TEXT = (236, 239, 246, 255)
-MUTED = (165, 175, 196, 255)
-BLUE = (74, 144, 255, 255)
-ORANGE = (255, 159, 67, 255)
-PANEL_BG = (12, 18, 34, 190)
-PANEL_EDGE = (84, 132, 255, 220)
-SHADOW = (0, 0, 0, 170)
+# Theme (keep in sync with facial/web/style.css and hud.js).
+INK = (30, 27, 46)
+PAPER = (255, 246, 230)
+WHITE = (255, 255, 255)
+MUTED = (107, 102, 128)
+BLUE = (91, 108, 255)
+YELLOW = (255, 200, 61)
+CORAL = (255, 107, 107)
+MINT = (51, 209, 160)
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11),
               (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)]
@@ -70,25 +72,18 @@ def hand_label(h: dict, lang: str = "en") -> str:
 
 # --------------------------------------------------------------------------- fonts
 
-_FONT_PATHS = {
-    "sans": ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf",
-             "/Library/Fonts/Arial.ttf", "C:/Windows/Fonts/arial.ttf", "DejaVuSans.ttf"],
-    "bold": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-             "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "C:/Windows/Fonts/arialbd.ttf",
-             "DejaVuSans-Bold.ttf"],
-    "mono": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/System/Library/Fonts/Menlo.ttc",
-             "C:/Windows/Fonts/consola.ttf", "DejaVuSansMono.ttf"],
-    "cjk": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc",
-            "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"],
-}
+FREDOKA = Path(__file__).resolve().parent / "web" / "fonts" / "Fredoka.ttf"
+_CJK_PATHS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
+]
 _CJK = re.compile(r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]")
 
 
-def _find_font(role: str) -> str | None:
-    for candidate in _FONT_PATHS[role]:
+def _find(paths: list[str]) -> str | None:
+    for candidate in paths:
         try:
             ImageFont.truetype(candidate, 12)
             return candidate
@@ -98,25 +93,24 @@ def _find_font(role: str) -> str | None:
 
 
 @lru_cache(maxsize=None)
-def _load(path: str | None, size: int):
+def _load(path: str | None, size: int, weight: int):
     if path is None:
         return ImageFont.load_default(size=size)
-    return ImageFont.truetype(path, size)
+    font = ImageFont.truetype(path, size)
+    if path == str(FREDOKA):
+        font.set_variation_by_axes([weight, 100])  # axes: weight, width
+    return font
 
 
 class Fonts:
     def __init__(self, custom: str | None = None):
-        self.paths = {role: _find_font(role) for role in _FONT_PATHS}
-        if custom:
-            for role in ("sans", "bold", "cjk"):
-                self.paths[role] = custom
-        self.has_cjk = self.paths["cjk"] is not None
+        self.main = custom or (str(FREDOKA) if FREDOKA.exists() else _find(["DejaVuSans.ttf"]))
+        self.cjk = custom or _find(_CJK_PATHS)
+        self.has_cjk = self.cjk is not None
 
-    def get(self, role: str, size: float, text: str = ""):
-        path = self.paths[role]
-        if self.has_cjk and (role != "mono") and _CJK.search(text):
-            path = self.paths["cjk"]
-        return _load(path, max(8, int(round(size))))
+    def get(self, weight: int, size: float, text: str = ""):
+        path = self.cjk if (self.has_cjk and _CJK.search(text)) else self.main
+        return _load(path, max(8, int(round(size))), weight)
 
 
 def wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: float, max_lines: int) -> list[str]:
@@ -149,8 +143,8 @@ def _mix(c0, c1, a):
 
 
 def valence_colour(v: float):
-    neutral = (110, 130, 175, 255)
-    return _mix(neutral, (70, 165, 255, 255), v) if v >= 0 else _mix(neutral, (236, 92, 80, 255), -v)
+    """Mood colour: coral (negative) -> yellow (neutral) -> mint (positive)."""
+    return _mix(YELLOW, MINT, v) if v >= 0 else _mix(YELLOW, CORAL, -v)
 
 
 # --------------------------------------------------------------------------- overlay
@@ -160,7 +154,8 @@ class Overlay:
                  judgments: list[dict], segments: list, lang: str = "en", skeleton: bool = False,
                  font: str | None = None):
         self.W, self.H = width, height
-        self.s = height / 720
+        self.portrait = width < height
+        self.u = max(0.4, width / 360 if self.portrait else height / 720)
         self.samples = samples
         self.sample_t = [x["t"] for x in samples]
         self.windows = windows
@@ -241,202 +236,225 @@ class Overlay:
         prev = self.judgments[k - 1][key]
         return prev + (cur - prev) * _smoothstep((t - self.windows[k]["start"]) / 0.6)
 
+    # -- primitives ----------------------------------------------------------
+    def _px(self, v: float) -> int:
+        return max(1, int(round(v * self.u)))
+
+    def _rr(self, d, x0, y0, x1, y1, r, **kw):
+        r = max(0.0, min(r, (y1 - y0) / 2, (x1 - x0) / 2))
+        d.rounded_rectangle([x0, y0, x1, y1], radius=r, **kw)
+
+    def _sticker(self, d, x, y, w, h, r, fill=WHITE, shadow=4.0, line=3.0):
+        u = self.u
+        if shadow:
+            self._rr(d, x + shadow * u, y + shadow * u, x + w + shadow * u, y + h + shadow * u, r, fill=INK)
+        self._rr(d, x, y, x + w, y + h, r, fill=fill, outline=INK, width=self._px(line))
+
+    def _pill(self, d, x, cy, text, size=12, fill=WHITE, color=INK, weight=700, pad=8, shadow=0.0, line=2.0):
+        u = self.u
+        font = self.fonts.get(weight, size * u, text)
+        w = d.textlength(text, font=font) + 2 * pad * u
+        h = size * u + 10 * u
+        self._sticker(d, x, cy - h / 2, w, h, h / 2, fill=fill, shadow=shadow, line=line)
+        d.text((x + pad * u, cy + 0.5 * u), text, font=font, fill=color, anchor="lm")
+        return w
+
     # -- drawing -------------------------------------------------------------
     def draw(self, frame_bgr: np.ndarray, t: float) -> np.ndarray:
-        base = Image.fromarray(np.ascontiguousarray(frame_bgr[:, :, ::-1])).convert("RGBA")
-        layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-        d = ImageDraw.Draw(layer)
+        img = Image.fromarray(np.ascontiguousarray(frame_bgr[:, :, ::-1]))
+        d = ImageDraw.Draw(img)
         k = self._window(t)
         sample = self._nearest_sample(t)
+        u, W, H = self.u, self.W, self.H
 
         if self.skeleton and sample:
             self._draw_skeleton(d, sample)
-        self._draw_hud(d, t, k, sample)
+        self._draw_chips(d, t, k, sample)
         self._draw_gesture(d, t)
+        foot_top = self._draw_footer(d)
+        sub_top = self._draw_subtitle(d, t, foot_top - 8 * u)
         if self.judgments:
-            self._draw_panel(d, t, k)
-            self._draw_reading(d, k)
-        self._draw_subtitle(d, t)
-        self._draw_footer(d)
+            x0, y0, pw, ph = self._panel_geometry()
+            if self.portrait:
+                top = self._draw_reading(d, k, 12 * u, min(H - 90 * u, sub_top - 20 * u), W - 28 * u)
+                y0 = top - 14 * u - ph
+            else:
+                self._draw_reading(d, k, 18 * u, H - 104 * u, min(W * 0.56, x0 - 48 * u))
+            self._draw_panel(d, t, k, x0, y0, pw, ph)
+        return np.ascontiguousarray(np.asarray(img)[:, :, ::-1])
 
-        out = Image.alpha_composite(base, layer).convert("RGB")
-        return np.ascontiguousarray(np.asarray(out)[:, :, ::-1])
-
-    def _text(self, d, xy, text, font, fill=TEXT, stroke=0):
-        if stroke:
-            d.text(xy, text, font=font, fill=fill, stroke_width=stroke, stroke_fill=SHADOW)
-        else:
-            d.text((xy[0] + max(1, self.s), xy[1] + max(1, self.s)), text, font=font, fill=SHADOW)
-            d.text(xy, text, font=font, fill=fill)
-
-    def _draw_hud(self, d, t, k, sample):
-        s = self.s
-        d.rectangle([0, 0, self.W, 24 * s], fill=(0, 0, 0, 90))
-        shot = shot_type(sample["face"]["size"] if sample and sample["face"] else None)
-        hud = f"t={t:05.1f}   WIN {k + 1}/{max(1, len(self.windows))}   shot={shot}"
-        self._text(d, (12 * s, 5 * s), hud, self.fonts.get("mono", 12 * s), fill=(220, 225, 235, 255))
+    def _draw_chips(self, d, t, k, sample):
+        u = self.u
+        cy = 24 * u
+        x = 14 * u
+        x += self._pill(d, x, cy, f"{t:.1f}s", weight=600) + 6 * u
+        x += self._pill(d, x, cy, f"W{k + 1}/{max(1, len(self.windows))}", fill=BLUE, color=WHITE) + 6 * u
+        self._pill(d, x, cy, shot_type(sample["face"]["size"] if sample and sample["face"] else None), weight=600)
 
     def _draw_gesture(self, d, t):
         live = self._live_hand(t)
         if not live:
             return
-        s = self.s
-        x, y = 22 * s, 42 * s
+        u, W, H = self.u, self.W, self.H
+        x, y = 14 * u, 46 * u
         label = hand_label(live, self.lang)
-        font = self.fonts.get("bold", 22 * s, label)
-        self._text(d, (x, y), label, font, stroke=max(1, round(2 * s)))
-        tw = d.textlength(label, font=font)
+        size = 19 * u
+        font = self.fonts.get(700, size, label)
+        while d.textlength(label, font=font) > W - 2 * x - 28 * u and size > 11:
+            size -= 1
+            font = self.fonts.get(700, size, label)
+        w = d.textlength(label, font=font) + 24 * u
+        h = size + 18 * u
 
-        y2 = y + 32 * s
-        d.line([(x, y2 + 7 * s), (x + 16 * s, y2 + 7 * s)], fill=BLUE, width=max(1, round(2 * s)))
-        vis = f"{self.str['vision']}  {live['score']:.2f}"
-        self._text(d, (x + 22 * s, y2), vis, self.fonts.get("sans", 11 * s, vis), fill=(190, 210, 255, 255))
-
-        anchor = live["anchor"]
-        if anchor is not None:
-            ax, ay = anchor[0] * self.W, anchor[1] * self.H
-            sx, sy = x + tw + 10 * s, y + 13 * s
-            d.line([(sx, sy), (ax, ay)], fill=(255, 255, 255, 185), width=max(1, round(1.2 * s)))
-            r = 6 * s
-            d.ellipse([ax - r, ay - r, ax + r, ay + r], outline=(255, 255, 255, 230), width=max(1, round(2 * s)))
-            r2 = 2 * s
-            d.ellipse([ax - r2, ay - r2, ax + r2, ay + r2], fill=(255, 255, 255, 230))
+        a = live["anchor"]
+        if a is not None:
+            ax, ay = a[0] * W, a[1] * H
+            sx, sy = min(max(ax, x), x + w), min(max(ay, y), y + h)
+            d.line([(sx, sy), (ax, ay)], fill=WHITE, width=self._px(9))
+            d.line([(sx, sy), (ax, ay)], fill=INK, width=self._px(4))
+            r = 8 * u
+            d.ellipse([ax - r, ay - r, ax + r, ay + r], fill=YELLOW, outline=INK, width=self._px(3))
+        self._sticker(d, x, y, w, h, 14 * u, shadow=3)
+        d.text((x + 12 * u, y + h / 2 + 0.5 * u), label, font=font, fill=INK, anchor="lm")
+        self._pill(d, x + 8 * u, y + h + 16 * u, f"{self.str['vision']} {live['score']:.2f}", size=11,
+                   fill=BLUE, color=WHITE)
 
     def _panel_geometry(self):
-        s = self.s
-        pw, ph = 252 * s, 164 * s
-        x0 = self.W - pw - 20 * s
-        y0 = self.H - 100 * s - ph
-        return x0, y0, pw, ph
+        u = self.u
+        ph = 178 * u
+        if self.portrait:
+            pw = min(self.W - 28 * u, 300 * u)
+            return self.W - pw - 14 * u, 0.0, pw, ph
+        pw = 262 * u
+        return self.W - pw - 22 * u, self.H - 104 * u - ph, pw, ph
 
-    def _draw_panel(self, d, t, k):
-        s = self.s
-        x0, y0, pw, ph = self._panel_geometry()
+    def _draw_panel(self, d, t, k, x0, y0, pw, ph):
+        u, s = self.u, self.str
         j = self.judgments[k]
-        d.rounded_rectangle([x0, y0, x0 + pw, y0 + ph], radius=8 * s, fill=PANEL_BG, outline=PANEL_EDGE,
-                            width=max(1, round(1.5 * s)))
-        title = self.str["verdict"]
-        tfont = self.fonts.get("bold", 15 * s, title)
-        d.text((x0 + 12 * s, y0 + 9 * s), title, font=tfont, fill=TEXT)
-        sub = f"{self.judge_name} · {self.str['fusion']}"
-        d.text((x0 + 18 * s + d.textlength(title, font=tfont), y0 + 13 * s), sub,
-               font=self.fonts.get("sans", 10 * s, sub), fill=(140, 175, 255, 255))
+        self._sticker(d, x0, y0, pw, ph, 18 * u)
 
-        bars = (("confidence", BLUE), ("focus", BLUE), ("tension", ORANGE))
-        label_fonts = {key: self.fonts.get("sans", 12 * s, self.str[key]) for key, _ in bars}
-        label_w = max(d.textlength(self.str[key], font=f) for key, f in label_fonts.items())
-        bx0 = x0 + 12 * s + label_w + 10 * s
-        bx1 = max(x0 + pw - 52 * s, bx0 + 4 * s)  # fonts have a minimum size, so tiny frames can squeeze this
+        title_font = self.fonts.get(700, 18 * u, s["verdict"])
+        d.text((x0 + 14 * u, y0 + 22 * u), s["verdict"], font=title_font, fill=INK, anchor="lm")
+        tag = "Claude" if j["source"] == "claude" else s["rules"]
+        self._pill(d, x0 + 22 * u + d.textlength(s["verdict"], font=title_font), y0 + 22 * u, tag, size=11,
+                   fill=YELLOW)
+
+        bars = (("confidence", BLUE), ("focus", MINT), ("tension", CORAL))
+        label_fonts = {key: self.fonts.get(600, 13 * u, s[key]) for key, _ in bars}
+        label_w = max(d.textlength(s[key], font=f) for key, f in label_fonts.items())
+        bx0 = x0 + 24 * u + label_w
+        bx1 = max(x0 + pw - 50 * u, bx0 + 4 * u)  # fonts have a minimum size, so tiny frames can squeeze this
+        value_font = self.fonts.get(700, 13 * u)
         for i, (key, colour) in enumerate(bars):
-            yy = y0 + 40 * s + i * 21 * s
-            label = self.str[key]
-            d.text((x0 + 12 * s, yy), label, font=label_fonts[key], fill=MUTED)
+            cy = y0 + 52 * u + i * 25 * u
+            d.text((x0 + 14 * u, cy), s[key], font=label_fonts[key], fill=MUTED, anchor="lm")
             v = self._value(k, key, t)
-            cy = yy + 8 * s
-            d.rounded_rectangle([bx0, cy - 2.5 * s, bx1, cy + 2.5 * s], radius=2.5 * s, fill=(255, 255, 255, 40))
-            if v > 0.005:
-                d.rounded_rectangle([bx0, cy - 2.5 * s, bx0 + (bx1 - bx0) * v, cy + 2.5 * s],
-                                    radius=2.5 * s, fill=colour)
-            d.text((bx1 + 8 * s, yy + 1 * s), f"{v:.2f}", font=self.fonts.get("mono", 11 * s), fill=colour)
+            self._rr(d, bx0, cy - 6 * u, bx1, cy + 6 * u, 6 * u, fill=PAPER)
+            fill_w = (bx1 - bx0) * v
+            if fill_w >= 2:
+                self._rr(d, bx0, cy - 6 * u, bx0 + fill_w, cy + 6 * u, 6 * u, fill=colour)
+            self._rr(d, bx0, cy - 6 * u, bx1, cy + 6 * u, 6 * u, outline=INK, width=self._px(2))
+            d.text((bx1 + 8 * u, cy), f"{v:.2f}", font=value_font, fill=INK, anchor="lm")
 
-        yy = y0 + 40 * s + 3 * 21 * s + 4 * s
+        cy = y0 + 52 * u + 3 * 25 * u + 2 * u
+        d.text((x0 + 14 * u, cy), s["intent"], font=self.fonts.get(600, 12 * u, s["intent"]), fill=MUTED,
+               anchor="lm")
         cert = f"{j['intent_certainty']:.2f}"
-        mono = self.fonts.get("mono", 11 * s)
-        room = pw - 24 * s - d.textlength(cert, font=mono) - 8 * s
-        intent_text = f"{self.str['intent']} → {j['intent']}"
-        ifont = self.fonts.get("sans", 13 * s, intent_text)
-        intent_line = wrap(d, intent_text, ifont, room, 1)[0]
-        d.text((x0 + 12 * s, yy), intent_line, font=ifont, fill=TEXT)
-        d.text((x0 + pw - 12 * s - d.textlength(cert, font=mono), yy + 2 * s), cert, font=mono, fill=BLUE)
+        cert_w = d.textlength(cert, font=self.fonts.get(700, 11 * u)) + 16 * u
+        self._pill(d, x0 + pw - 14 * u - cert_w, cy, cert, size=11, fill=BLUE, color=WHITE)
+        ix = x0 + 24 * u + label_w
+        intent_font = self.fonts.get(700, 15 * u, j["intent"])
+        line = wrap(d, j["intent"], intent_font, x0 + pw - 24 * u - cert_w - ix, 1)
+        d.text((ix, cy), line[0] if line else "", font=intent_font, fill=INK, anchor="lm")
 
-        yy += 26 * s
-        arc = self.str["arc"]
-        arc_font = self.fonts.get("sans", 10 * s, arc)
-        d.text((x0 + 12 * s, yy), arc, font=arc_font, fill=MUTED)
-        size, gap = 10 * s, 4 * s
-        ax0 = max(bx0, x0 + 12 * s + d.textlength(arc, font=arc_font) + 10 * s)
-        n_fit = max(1, int((x0 + pw - 12 * s - ax0) // (size + gap)))
-        first = max(0, k + 1 - n_fit)
+        cy += 27 * u
+        d.text((x0 + 14 * u, cy), s["arc"], font=self.fonts.get(600, 12 * u, s["arc"]), fill=MUTED, anchor="lm")
+        r, gap = 6 * u, 5 * u
+        fit = max(1, int((x0 + pw - 14 * u - ix) // (2 * r + gap)))
+        first = max(0, k + 1 - fit)
         for n, idx in enumerate(range(first, k + 1)):
-            qx = ax0 + n * (size + gap)
-            colour = valence_colour(self.judgments[idx]["valence"])
-            outline = (255, 255, 255, 255) if idx == k else None
-            d.rounded_rectangle([qx, yy + 1 * s, qx + size, yy + 1 * s + size], radius=2 * s, fill=colour,
-                                outline=outline, width=max(1, round(1.2 * s)))
+            rr = r * 1.25 if idx == k else r
+            cx = ix + r + n * (2 * r + gap)
+            d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=valence_colour(self.judgments[idx]["valence"]),
+                      outline=INK, width=self._px(2.5 if idx == k else 2))
 
-    def _draw_reading(self, d, k):
-        s = self.s
+    def _draw_reading(self, d, k, left, bottom, max_w) -> float:
+        """Speech bubble with the reading, bottom edge at `bottom`; returns its top."""
+        u = self.u
         j = self.judgments[k]
         if not j["reading"] and not j["quote"]:
-            return
-        x0, _, _, _ = self._panel_geometry()
-        left = 20 * s
-        max_w = max(60 * s, min(self.W * 0.56, x0 - left - 24 * s))
-        text = f"W{k + 1} > {j['reading']}"
-        font = self.fonts.get("sans", 14 * s, text)
-        lines = wrap(d, text, font, max_w - 20 * s, 2)
-        line_h = 20 * s
-
-        quote = j["quote"]
-        chip = self.str["quote"]
-        chip_font = self.fonts.get("bold", 10 * s, chip)
-        q_text = f"“{quote}”"
-        q_font = self.fonts.get("sans", 13 * s, q_text)
-        chip_w = d.textlength(chip, font=chip_font) + 10 * s
-        q_lines = wrap(d, q_text, q_font, max_w - chip_w - 28 * s, 1) if quote else []
-
-        height = 10 * s + len(lines) * line_h + (22 * s if q_lines else 0) + 6 * s
-        bottom = self.H - 100 * s
+            return bottom
+        tag = f"W{k + 1}"
+        tag_w = d.textlength(tag, font=self.fonts.get(700, 12 * u)) + 16 * u
+        font = self.fonts.get(500, 15 * u, j["reading"])
+        lines = wrap(d, j["reading"], font, max(40 * u, max_w - 36 * u - tag_w), 2)
+        line_h = 21 * u
+        q_text = f"“{j['quote']}”" if j["quote"] else ""
+        q_font = self.fonts.get(600, 13 * u, q_text)
+        q_lines = wrap(d, q_text, q_font, max(40 * u, max_w - 44 * u), 1) if q_text else []
+        height = 16 * u + len(lines) * line_h + (28 * u if q_lines else 0)
         top = bottom - height
-        width = max([d.textlength(ln, font=font) for ln in lines] +
-                    ([chip_w + 8 * s + d.textlength(q_lines[0], font=q_font)] if q_lines else [0])) + 20 * s
-        d.rounded_rectangle([left, top, left + width, bottom], radius=6 * s, fill=(0, 0, 0, 125))
-        y = top + 8 * s
-        for ln in lines:
-            d.text((left + 10 * s, y), ln, font=font, fill=TEXT)
-            y += line_h
+        width = tag_w + 8 * u + max([d.textlength(ln, font=font) for ln in lines] or [0])
         if q_lines:
-            y += 2 * s
-            d.rounded_rectangle([left + 10 * s, y, left + 10 * s + chip_w, y + 16 * s], radius=3 * s, fill=ORANGE)
-            d.text((left + 15 * s, y + 2 * s), chip, font=chip_font, fill=(40, 24, 8, 255))
-            d.text((left + 18 * s + chip_w, y), q_lines[0], font=q_font, fill=TEXT)
+            width = max(width, d.textlength(q_lines[0], font=q_font) + 16 * u)
+        width += 28 * u
 
-    def _draw_subtitle(self, d, t):
+        self._rr(d, left + 4 * u, top + 4 * u, left + width + 4 * u, bottom + 4 * u, 16 * u, fill=INK)
+        tail = [(left + 22 * u, bottom - 2 * u), (left + 14 * u, bottom + 14 * u), (left + 42 * u, bottom - 2 * u)]
+        d.polygon(tail, fill=WHITE, outline=INK, width=self._px(3))
+        self._rr(d, left, top, left + width, bottom, 16 * u, fill=WHITE, outline=INK, width=self._px(3))
+
+        y = top + 8 * u + line_h / 2
+        self._pill(d, left + 12 * u, y, tag, fill=BLUE, color=WHITE)
+        for i, ln in enumerate(lines):
+            d.text((left + 20 * u + tag_w, y + i * line_h), ln, font=font, fill=INK, anchor="lm")
+        if q_lines:
+            y += len(lines) * line_h + 4 * u
+            self._pill(d, left + 12 * u, y, q_lines[0], size=13, weight=600, fill=YELLOW)
+        return top
+
+    def _draw_subtitle(self, d, t, bottom) -> float:
         text = self._subtitle(t)
         if not text:
-            return
-        s = self.s
-        font = self.fonts.get("sans", 18 * s, text)
-        lines = wrap(d, text, font, self.W * 0.62, 2)
-        y = self.H - 36 * s - len(lines) * 24 * s
+            return bottom
+        u = self.u
+        font = self.fonts.get(600, (18 if self.portrait else 20) * u, text)
+        lines = wrap(d, text, font, self.W * (0.9 if self.portrait else 0.62), 2)
+        lh = 26 * u
+        top = bottom - len(lines) * lh
+        y = top + lh / 2
         for ln in lines:
             w = d.textlength(ln, font=font)
-            d.text(((self.W - w) / 2, y), ln, font=font, fill=(255, 255, 255, 255),
-                   stroke_width=max(1, round(2 * s)), stroke_fill=(0, 0, 0, 220))
-            y += 24 * s
+            d.text(((self.W - w) / 2, y), ln, font=font, fill=WHITE, anchor="lm",
+                   stroke_width=self._px(3), stroke_fill=INK)
+            y += lh
+        return top
 
-    def _draw_footer(self, d):
-        s = self.s
-        text = self.str["footer"].format(judge=self.judge_name)
-        font = self.fonts.get("sans", 9 * s, text)
-        self._text(d, (12 * s, self.H - 16 * s), text, font, fill=(185, 192, 208, 230))
+    def _draw_footer(self, d) -> float:
+        u = self.u
+        cy = self.H - 18 * u
+        self._pill(d, 12 * u, cy, self.str["footer"].format(judge=self.judge_name), size=10, weight=600,
+                   fill=PAPER, line=1.5, pad=7)
+        return cy - 11 * u
 
     def _draw_skeleton(self, d, sample):
-        W, H, s = self.W, self.H, self.s
+        W, H, u = self.W, self.H, self.u
         for h in sample["hands"]:
             pts = [(x * W, y * H) for x, y in h["pts"]]
-            for a, b in HAND_EDGES:
-                d.line([pts[a], pts[b]], fill=(120, 200, 255, 150), width=max(1, round(1.5 * s)))
+            for colour, width in ((WHITE, 5), (INK, 2.2)):
+                for a, b in HAND_EDGES:
+                    d.line([pts[a], pts[b]], fill=colour, width=self._px(width))
             for x, y in pts:
-                r = 2 * s
-                d.ellipse([x - r, y - r, x + r, y + r], fill=(255, 255, 255, 200))
+                r = 3 * u
+                d.ellipse([x - r, y - r, x + r, y + r], fill=YELLOW, outline=INK, width=self._px(1.5))
         if sample["face"]:
             x0, y0, x1, y1 = sample["face"]["bbox"]
             x0, x1, y0, y1 = x0 * W, x1 * W, y0 * H, y1 * H
             c = 0.18 * (x1 - x0)
-            for (px, py, dx, dy) in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
-                d.line([(px, py), (px + dx * c, py)], fill=(255, 255, 255, 170), width=max(1, round(1.5 * s)))
-                d.line([(px, py), (px, py + dy * c)], fill=(255, 255, 255, 170), width=max(1, round(1.5 * s)))
+            for colour, width in ((WHITE, 6), (INK, 3)):
+                for (px, py, dx, dy) in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
+                    d.line([(px + dx * c, py), (px, py), (px, py + dy * c)], fill=colour, width=self._px(width),
+                           joint="curve")
 
 
 def render_video(info: VideoInfo, out_path: Path, overlay: Overlay, audio_from: Path | None,

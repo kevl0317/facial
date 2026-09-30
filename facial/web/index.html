@@ -3,78 +3,94 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b0f19">
+  <meta name="theme-color" content="#fff6e6">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <title>facial</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f19'/%3E%3Ccircle cx='16' cy='14' r='7' fill='none' stroke='%234a90ff' stroke-width='2.5'/%3E%3Cpath d='M8 26c2-3 5-4 8-4s6 1 8 4' fill='none' stroke='%23ff9f43' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='9' fill='%23ffc83d' stroke='%231e1b2e' stroke-width='3'/%3E%3Cpath d='M11 22v-9m3 9V9m3 13V10m3 12v-8' stroke='%231e1b2e' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preload" href="/static/fonts/Fredoka.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <!-- Icon sprite (ink-style, 24px grid) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-camera" viewBox="0 0 24 24"><rect x="2.5" y="6.5" width="13" height="11" rx="3"/><path d="M15.5 10.5l5-3v9l-5-3z"/></symbol>
+      <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 4v16M16.5 4v16M3 9.5h4.5M3 14.5h4.5M16.5 9.5H21M16.5 14.5H21"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 17h3M12 17h8"/><circle cx="15.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/></symbol>
+      <symbol id="i-flip" viewBox="0 0 24 24"><path d="M4.5 11a7.5 7.5 0 0 1 13-4.5l1.5 1.5M19 3.5V8h-4.5M19.5 13a7.5 7.5 0 0 1-13 4.5L5 16M5 20.5V16h4.5"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></symbol>
+      <symbol id="i-cc" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="3.5"/><path d="M10.5 10.2a2.5 2.5 0 1 0 0 3.6M17 10.2a2.5 2.5 0 1 0 0 3.6"/></symbol>
+      <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V11M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6a1.5 1.5 0 0 1 3 0v7.5c0 4-2.6 6.5-6 6.5-3 0-4.6-1.8-6-4L3.3 12.6a1.5 1.5 0 0 1 2.5-1.6L8 14"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5M19 4v5h-5"/></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18h3"/></symbol>
+      <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.6 5.6 1.9-5.6 1.9-1.9 5.6-1.9-5.6-5.6-1.9 5.6-1.9z"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    </defs>
+  </svg>
+
+  <canvas id="intro" aria-hidden="true"></canvas>
+
   <header class="topbar">
-    <div class="brand">facial</div>
+    <a class="logo" href="/" aria-label="facial home"><span data-mascot="28"></span><span class="wordmark">facial</span></a>
     <nav class="tabs" role="tablist" aria-label="Mode">
-      <button role="tab" id="tabbtn-live" data-tab="live" aria-selected="true" aria-controls="tab-live">Live camera</button>
-      <button role="tab" id="tabbtn-file" data-tab="file" aria-selected="false" aria-controls="tab-file">Video file</button>
+      <button role="tab" id="tabbtn-live" data-tab="live" aria-selected="true" aria-controls="tab-live">
+        <svg class="ic"><use href="#i-camera"/></svg><span>Live</span></button>
+      <button role="tab" id="tabbtn-file" data-tab="file" aria-selected="false" aria-controls="tab-file">
+        <svg class="ic"><use href="#i-film"/></svg><span>Video</span></button>
     </nav>
-    <div class="judge-badge" id="judgeBadge" title="Judgment layer"></div>
+    <span class="judge-chip" id="judgeChip" hidden><svg class="ic"><use href="#i-sparkle"/></svg><span></span></span>
   </header>
 
   <main>
-    <!-- Live camera ----------------------------------------------------------------------- -->
+    <!-- Live -------------------------------------------------------------------------------- -->
     <section id="tab-live" class="tab live" role="tabpanel" aria-labelledby="tabbtn-live">
       <div class="stage">
         <canvas id="stage" aria-label="Camera with analysis overlay"></canvas>
         <div class="stage-empty" id="stageEmpty">
-          <h1>Real-time body-language reading</h1>
-          <p>MediaPipe tracks hands, face and posture on this device. Every few seconds the measurements,
-            your voice and the live transcript are judged, and the verdict appears on screen.</p>
-          <p class="hint">Prop the phone up so your face and hands are in frame, then press <b>Start</b>.</p>
+          <span data-mascot="120" data-mascot-class="mascot wave"></span>
+          <p>Ready when you are</p>
         </div>
       </div>
 
-      <aside class="controls" id="liveControls">
-        <div class="controls-bar">
-          <button id="startBtn" class="primary">Start</button>
-          <button id="settingsBtn" class="ghost" aria-expanded="false" aria-controls="settings">Settings</button>
+      <aside class="dock" id="dock">
+        <div class="dock-bar">
+          <button class="icon-btn" id="settingsBtn" aria-label="Settings" aria-expanded="false" aria-controls="settings">
+            <svg class="ic"><use href="#i-gear"/></svg></button>
+          <button class="rec-btn" id="startBtn" aria-label="Start">
+            <span class="rec-dot"></span><span class="rec-label">Start</span></button>
+          <button class="icon-btn" id="flipBtn" aria-label="Switch camera">
+            <svg class="ic"><use href="#i-flip"/></svg></button>
         </div>
-        <div class="settings" id="settings">
-          <div class="grid2">
-            <label>Camera
-              <select id="facing">
-                <option value="user">Front</option>
-                <option value="environment">Back</option>
-              </select>
-            </label>
-            <label>Language
-              <select id="lang">
-                <option value="en">English</option>
-                <option value="zh">中文</option>
-              </select>
-            </label>
+
+        <div class="sheet" id="settings">
+          <div class="seg" role="radiogroup" aria-label="Language" data-setting="lang">
+            <button type="button" role="radio" data-value="en">EN</button>
+            <button type="button" role="radio" data-value="zh">中文</button>
           </div>
-          <label>Context <span class="opt">(helps the judgment)</span>
-            <input id="context" type="text" maxlength="300" placeholder="e.g. Practising a product pitch">
-          </label>
-          <label>Window length <output id="windowOut">5 s</output>
+          <div class="toggles">
+            <button type="button" class="toggle" data-setting="mic" aria-pressed="true">
+              <svg class="ic"><use href="#i-mic"/></svg><span>Voice</span></button>
+            <button type="button" class="toggle" data-setting="speech" aria-pressed="true">
+              <svg class="ic"><use href="#i-cc"/></svg><span>Subtitles</span></button>
+            <button type="button" class="toggle" data-setting="skeleton" aria-pressed="false">
+              <svg class="ic"><use href="#i-hand"/></svg><span>Skeleton</span></button>
+          </div>
+          <label class="slider"><span>Window</span>
             <input id="windowSec" type="range" min="3" max="12" step="1" value="5">
-          </label>
-          <fieldset class="toggles">
-            <legend class="sr-only">Inputs</legend>
-            <label><input type="checkbox" id="mic" checked> Microphone (voice measurements)</label>
-            <label><input type="checkbox" id="speech" checked> Speech-to-text subtitles</label>
-            <label><input type="checkbox" id="skeleton"> Draw hand skeleton</label>
-          </fieldset>
-          <p class="status" id="liveStatus" role="status" aria-live="polite"></p>
-          <ol class="window-log" id="windowLog" aria-label="Judged windows"></ol>
-          <div class="phone-card" id="phoneCard" hidden>
-            <img id="phoneQr" alt="QR code that opens this app on your phone" width="132" height="132">
-            <div>
-              <strong>Open on your phone</strong>
-              <p>Scan with the phone camera while on the same Wi-Fi, then accept the certificate warning once.</p>
-              <code id="phoneUrl"></code>
-            </div>
-          </div>
+            <output id="windowOut">5s</output></label>
+          <input id="context" class="field" type="text" maxlength="300" placeholder="Context (optional)" aria-label="Context">
+        </div>
+
+        <p class="toast" id="liveStatus" role="status" aria-live="polite"></p>
+        <ol class="history" id="windowLog" aria-label="Judged windows"></ol>
+
+        <div class="qr-card" id="phoneCard" hidden>
+          <img id="phoneQr" alt="QR code to open on a phone" width="96" height="96">
+          <span><svg class="ic"><use href="#i-phone"/></svg> Open on phone</span>
         </div>
       </aside>
     </section>
@@ -82,50 +98,53 @@
     <!-- Video file -------------------------------------------------------------------------- -->
     <section id="tab-file" class="tab file" role="tabpanel" aria-labelledby="tabbtn-file" hidden>
       <div class="file-wrap">
-        <form id="jobForm" class="card">
-          <h2>Analyze a video file</h2>
-          <label>Video <input type="file" name="video" accept="video/*" required></label>
-          <label>Subtitles <span class="opt">(.srt / .vtt, optional)</span>
-            <input type="file" name="srt" accept=".srt,.vtt,text/vtt">
+        <form id="jobForm" class="card" novalidate>
+          <label class="drop" id="drop">
+            <input type="file" name="video" accept="video/*" id="videoInput">
+            <svg class="ic big"><use href="#i-film"/></svg>
+            <strong id="dropText">Drop a video</strong>
+            <span class="sub" id="dropSub">or tap to choose</span>
           </label>
-          <div class="grid2">
-            <label>Language
-              <select name="lang">
-                <option value="en">English</option>
-                <option value="zh">中文</option>
-              </select>
+          <div class="row">
+            <label class="chip-btn" id="srtChip">
+              <input type="file" name="srt" accept=".srt,.vtt,text/vtt" id="srtInput">
+              <svg class="ic"><use href="#i-cc"/></svg><span id="srtText">Subtitles</span>
             </label>
-            <label>Window (s) <input type="number" name="window" value="5" min="2" max="20" step="0.5"></label>
-            <label>Start (s) <span class="opt">optional</span> <input type="number" name="start" min="0" step="0.1" placeholder="0"></label>
-            <label>End (s) <span class="opt">optional</span> <input type="number" name="end" min="0" step="0.1" placeholder="end"></label>
+            <div class="seg" role="radiogroup" aria-label="Language" data-field="lang">
+              <button type="button" role="radio" data-value="en">EN</button>
+              <button type="button" role="radio" data-value="zh">中文</button>
+            </div>
+            <input type="hidden" name="lang" value="en">
           </div>
-          <label>Context <span class="opt">(who / what the clip is)</span>
-            <input type="text" name="context" maxlength="500" placeholder="e.g. CEO interview about company culture">
-          </label>
-          <fieldset class="toggles">
-            <legend class="sr-only">Options</legend>
-            <label><input type="checkbox" name="whisper" value="small" id="whisperBox"> Transcribe audio with Whisper when no subtitles are given</label>
-            <label><input type="checkbox" name="skeleton" value="true"> Draw hand skeleton</label>
-          </fieldset>
-          <button type="submit" class="primary">Analyze</button>
+          <details class="more">
+            <summary>More</summary>
+            <div class="more-grid">
+              <input class="field wide" type="text" name="context" maxlength="500" placeholder="Context (optional)" aria-label="Context">
+              <label>Start <input class="field" type="number" name="start" min="0" step="0.1" placeholder="0s"></label>
+              <label>End <input class="field" type="number" name="end" min="0" step="0.1" placeholder="end"></label>
+              <label>Window <input class="field" type="number" name="window" value="5" min="2" max="20" step="0.5"></label>
+              <label class="check"><input type="checkbox" name="whisper" value="small" id="whisperBox"> Auto-subtitles</label>
+              <label class="check"><input type="checkbox" name="skeleton" value="true"> Skeleton</label>
+            </div>
+          </details>
+          <button type="submit" class="big-btn">Analyze</button>
         </form>
 
-        <div id="jobProgress" class="card" hidden>
-          <h2 id="jobTitle">Processing…</h2>
-          <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="jobBar"><span></span></div>
-          <p class="status" id="jobStage"></p>
-          <pre class="log" id="jobLog"></pre>
+        <div id="jobProgress" class="card center" hidden>
+          <span data-mascot="96" data-mascot-class="mascot wave"></span>
+          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="jobBar"><span></span></div>
+          <p class="stage-name" id="jobStage">Uploading</p>
+          <details class="log-wrap"><summary>Details</summary><pre class="log" id="jobLog"></pre></details>
         </div>
 
         <div id="jobResult" class="card" hidden>
-          <h2>Result</h2>
-          <video id="resultVideo" controls playsinline preload="metadata"></video>
+          <div class="screen"><video id="resultVideo" controls playsinline preload="metadata"></video></div>
           <div class="actions">
-            <a id="downloadVideo" class="button" download>Download video</a>
-            <a id="downloadJson" class="button ghost" download>Analysis JSON</a>
-            <button id="newJob" class="ghost" type="button">Analyze another</button>
+            <a id="downloadVideo" class="pill-btn" download><svg class="ic"><use href="#i-download"/></svg>Video</a>
+            <a id="downloadJson" class="pill-btn" download><svg class="ic"><use href="#i-code"/></svg>JSON</a>
+            <button id="newJob" class="pill-btn" type="button"><svg class="ic"><use href="#i-redo"/></svg>New</button>
           </div>
-          <ol class="window-log big" id="resultWindows" aria-label="Windows; select one to jump to it"></ol>
+          <ol class="history big" id="resultWindows" aria-label="Windows; select one to jump to it"></ol>
         </div>
       </div>
     </section>
