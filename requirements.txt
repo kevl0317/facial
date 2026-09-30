@@ -8,6 +8,13 @@ scipy>=1.11
 # ffmpeg binary, used when ffmpeg is not already on PATH
 imageio-ffmpeg>=0.5
 
+# Web GUI (python -m facial serve)
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+cryptography>=41
+qrcode>=7.4
+
 # Optional: automatic subtitles when you have no .srt (python -m facial VIDEO --whisper small)
 # faster-whisper>=1.0
 

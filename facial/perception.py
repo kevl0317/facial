@@ -7,8 +7,8 @@ normalised to [0, 1] (x by frame width, y by frame height).
 from __future__ import annotations
 
 import math
-import sys
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import mediapipe as mp
@@ -214,6 +214,7 @@ def run_perception(
     analysis_fps: float = 15.0,
     mirrored: bool = False,
     model_dir: Path = DEFAULT_MODEL_DIR,
+    progress: Callable[[float], None] | None = None,
 ) -> list[dict]:
     """Run face, gesture and pose models over the video at ~analysis_fps."""
     paths = ensure_models(model_dir)
@@ -238,7 +239,6 @@ def run_perception(
     samples: list[dict] = []
     prev_hist = None
     index = 0
-    next_report = 0.0
     try:
         while True:
             ok, frame = cap.read()
@@ -266,13 +266,14 @@ def run_perception(
                     "hands": _hands(hand_res, w, h, mirrored),
                     "pose": _pose(pose_res, w, h),
                 })
-                if info.frames and index / info.frames >= next_report:
-                    print(f"  perception {100 * index / info.frames:5.1f}%  (t={t:.1f}s)", file=sys.stderr)
-                    next_report += 0.1
+                if progress and info.frames:
+                    progress(min(1.0, index / info.frames))
             index += 1
     finally:
         cap.release()
         face_task.close()
         hand_task.close()
         pose_task.close()
+    if progress:
+        progress(1.0)
     return samples

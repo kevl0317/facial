@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>facial</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f19'/%3E%3Ccircle cx='16' cy='14' r='7' fill='none' stroke='%234a90ff' stroke-width='2.5'/%3E%3Cpath d='M8 26c2-3 5-4 8-4s6 1 8 4' fill='none' stroke='%23ff9f43' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">facial</div>
+    <nav class="tabs" role="tablist" aria-label="Mode">
+      <button role="tab" id="tabbtn-live" data-tab="live" aria-selected="true" aria-controls="tab-live">Live camera</button>
+      <button role="tab" id="tabbtn-file" data-tab="file" aria-selected="false" aria-controls="tab-file">Video file</button>
+    </nav>
+    <div class="judge-badge" id="judgeBadge" title="Judgment layer"></div>
+  </header>
+
+  <main>
+    <!-- Live camera ----------------------------------------------------------------------- -->
+    <section id="tab-live" class="tab live" role="tabpanel" aria-labelledby="tabbtn-live">
+      <div class="stage">
+        <canvas id="stage" aria-label="Camera with analysis overlay"></canvas>
+        <div class="stage-empty" id="stageEmpty">
+          <h1>Real-time body-language reading</h1>
+          <p>MediaPipe tracks hands, face and posture on this device. Every few seconds the measurements,
+            your voice and the live transcript are judged, and the verdict appears on screen.</p>
+          <p class="hint">Prop the phone up so your face and hands are in frame, then press <b>Start</b>.</p>
+        </div>
+      </div>
+
+      <aside class="controls" id="liveControls">
+        <div class="controls-bar">
+          <button id="startBtn" class="primary">Start</button>
+          <button id="settingsBtn" class="ghost" aria-expanded="false" aria-controls="settings">Settings</button>
+        </div>
+        <div class="settings" id="settings">
+          <div class="grid2">
+            <label>Camera
+              <select id="facing">
+                <option value="user">Front</option>
+                <option value="environment">Back</option>
+              </select>
+            </label>
+            <label>Language
+              <select id="lang">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+            </label>
+          </div>
+          <label>Context <span class="opt">(helps the judgment)</span>
+            <input id="context" type="text" maxlength="300" placeholder="e.g. Practising a product pitch">
+          </label>
+          <label>Window length <output id="windowOut">5 s</output>
+            <input id="windowSec" type="range" min="3" max="12" step="1" value="5">
+          </label>
+          <fieldset class="toggles">
+            <legend class="sr-only">Inputs</legend>
+            <label><input type="checkbox" id="mic" checked> Microphone (voice measurements)</label>
+            <label><input type="checkbox" id="speech" checked> Speech-to-text subtitles</label>
+            <label><input type="checkbox" id="skeleton"> Draw hand skeleton</label>
+          </fieldset>
+          <p class="status" id="liveStatus" role="status" aria-live="polite"></p>
+          <ol class="window-log" id="windowLog" aria-label="Judged windows"></ol>
+          <div class="phone-card" id="phoneCard" hidden>
+            <img id="phoneQr" alt="QR code that opens this app on your phone" width="132" height="132">
+            <div>
+              <strong>Open on your phone</strong>
+              <p>Scan with the phone camera while on the same Wi-Fi, then accept the certificate warning once.</p>
+              <code id="phoneUrl"></code>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- Video file -------------------------------------------------------------------------- -->
+    <section id="tab-file" class="tab file" role="tabpanel" aria-labelledby="tabbtn-file" hidden>
+      <div class="file-wrap">
+        <form id="jobForm" class="card">
+          <h2>Analyze a video file</h2>
+          <label>Video <input type="file" name="video" accept="video/*" required></label>
+          <label>Subtitles <span class="opt">(.srt / .vtt, optional)</span>
+            <input type="file" name="srt" accept=".srt,.vtt,text/vtt">
+          </label>
+          <div class="grid2">
+            <label>Language
+              <select name="lang">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+            </label>
+            <label>Window (s) <input type="number" name="window" value="5" min="2" max="20" step="0.5"></label>
+            <label>Start (s) <span class="opt">optional</span> <input type="number" name="start" min="0" step="0.1" placeholder="0"></label>
+            <label>End (s) <span class="opt">optional</span> <input type="number" name="end" min="0" step="0.1" placeholder="end"></label>
+          </div>
+          <label>Context <span class="opt">(who / what the clip is)</span>
+            <input type="text" name="context" maxlength="500" placeholder="e.g. CEO interview about company culture">
+          </label>
+          <fieldset class="toggles">
+            <legend class="sr-only">Options</legend>
+            <label><input type="checkbox" name="whisper" value="small" id="whisperBox"> Transcribe audio with Whisper when no subtitles are given</label>
+            <label><input type="checkbox" name="skeleton" value="true"> Draw hand skeleton</label>
+          </fieldset>
+          <button type="submit" class="primary">Analyze</button>
+        </form>
+
+        <div id="jobProgress" class="card" hidden>
+          <h2 id="jobTitle">Processing…</h2>
+          <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="jobBar"><span></span></div>
+          <p class="status" id="jobStage"></p>
+          <pre class="log" id="jobLog"></pre>
+        </div>
+
+        <div id="jobResult" class="card" hidden>
+          <h2>Result</h2>
+          <video id="resultVideo" controls playsinline preload="metadata"></video>
+          <div class="actions">
+            <a id="downloadVideo" class="button" download>Download video</a>
+            <a id="downloadJson" class="button ghost" download>Analysis JSON</a>
+            <button id="newJob" class="ghost" type="button">Analyze another</button>
+          </div>
+          <ol class="window-log big" id="resultWindows" aria-label="Windows; select one to jump to it"></ol>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

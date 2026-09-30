@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import bisect
 import re
-import sys
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -325,7 +325,8 @@ class Overlay:
         bars = (("confidence", BLUE), ("focus", BLUE), ("tension", ORANGE))
         label_fonts = {key: self.fonts.get("sans", 12 * s, self.str[key]) for key, _ in bars}
         label_w = max(d.textlength(self.str[key], font=f) for key, f in label_fonts.items())
-        bx0, bx1 = x0 + 12 * s + label_w + 10 * s, x0 + pw - 52 * s
+        bx0 = x0 + 12 * s + label_w + 10 * s
+        bx1 = max(x0 + pw - 52 * s, bx0 + 4 * s)  # fonts have a minimum size, so tiny frames can squeeze this
         for i, (key, colour) in enumerate(bars):
             yy = y0 + 40 * s + i * 21 * s
             label = self.str[key]
@@ -370,7 +371,7 @@ class Overlay:
             return
         x0, _, _, _ = self._panel_geometry()
         left = 20 * s
-        max_w = min(self.W * 0.56, x0 - left - 24 * s)
+        max_w = max(60 * s, min(self.W * 0.56, x0 - left - 24 * s))
         text = f"W{k + 1} > {j['reading']}"
         font = self.fonts.get("sans", 14 * s, text)
         lines = wrap(d, text, font, max_w - 20 * s, 2)
@@ -438,19 +439,19 @@ class Overlay:
                 d.line([(px, py), (px, py + dy * c)], fill=(255, 255, 255, 170), width=max(1, round(1.5 * s)))
 
 
-def render_video(info: VideoInfo, out_path: Path, overlay: Overlay, audio_from: Path | None) -> None:
+def render_video(info: VideoInfo, out_path: Path, overlay: Overlay, audio_from: Path | None,
+                 progress: Callable[[float], None] | None = None) -> None:
     cap = cv2.VideoCapture(str(info.path))
     writer = VideoWriter(out_path, info.width, info.height, info.fps, audio_from)
-    index, next_report = 0, 0.0
+    index = 0
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
             writer.write(overlay.draw(frame, index / info.fps))
-            if info.frames and index / info.frames >= next_report:
-                print(f"  render {100 * index / info.frames:5.1f}%", file=sys.stderr)
-                next_report += 0.1
+            if progress and info.frames and index % 10 == 0:
+                progress(min(1.0, index / info.frames))
             index += 1
     finally:
         cap.release()

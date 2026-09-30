@@ -1,9 +1,11 @@
-"""Download and cache the MediaPipe Tasks model bundles."""
+"""Download and cache the MediaPipe Tasks model bundles and the MediaPipe web runtime."""
 
 from __future__ import annotations
 
+import io
 import shutil
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -16,6 +18,16 @@ MODEL_URLS = {
 }
 
 DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
+
+# MediaPipe Tasks for the web (runs the same .task models in the browser via WASM/WebGL).
+TASKS_VISION_VERSION = "1.0.1"
+_TASKS_VISION_URL = ("https://registry.npmjs.org/@mediapipe/tasks-vision/-/"
+                     f"tasks-vision-{TASKS_VISION_VERSION}.tgz")
+
+
+def _download(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=120) as resp:
+        return resp.read()
 
 
 def ensure_models(model_dir: Path = DEFAULT_MODEL_DIR) -> dict[str, Path]:
@@ -32,3 +44,23 @@ def ensure_models(model_dir: Path = DEFAULT_MODEL_DIR) -> dict[str, Path]:
             tmp.rename(path)
         paths[name] = path
     return paths
+
+
+def ensure_web_vendor(model_dir: Path = DEFAULT_MODEL_DIR) -> Path:
+    """Vendor @mediapipe/tasks-vision (JS bundle + WASM) so phones need no CDN access."""
+    dest = model_dir / "web" / "tasks-vision"
+    marker = dest / ".version"
+    if marker.exists() and marker.read_text() == TASKS_VISION_VERSION:
+        return dest
+    print(f"Downloading MediaPipe web runtime {TASKS_VISION_VERSION} -> {dest}", file=sys.stderr)
+    archive = tarfile.open(fileobj=io.BytesIO(_download(_TASKS_VISION_URL)), mode="r:gz")
+    if dest.exists():
+        shutil.rmtree(dest)
+    (dest / "wasm").mkdir(parents=True)
+    for member in archive.getmembers():
+        rel = member.name.removeprefix("package/")
+        wanted = rel == "vision_bundle.mjs" or (rel.startswith("wasm/") and rel.count("/") == 1)
+        if member.isfile() and wanted:
+            (dest / rel).write_bytes(archive.extractfile(member).read())
+    marker.write_text(TASKS_VISION_VERSION)
+    return dest

@@ -28,11 +28,16 @@ class AudioTrack:
 
 def analyze_audio(wav: Path, sample_rate: int = 16000) -> AudioTrack:
     y, sr = librosa.load(str(wav), sr=sample_rate, mono=True)
+    return analyze_samples(y, sr)
+
+
+def analyze_samples(y: np.ndarray, sr: int, offset: float = 0.0) -> AudioTrack:
+    """Analyse mono float samples; `offset` shifts the timeline (for live audio buffers)."""
     hop = int(sr * HOP_S)
     frame = 1024
     rms = librosa.feature.rms(y=y, frame_length=frame, hop_length=hop)[0]
     db = 20 * np.log10(rms + 1e-10)
-    times = librosa.times_like(rms, sr=sr, hop_length=hop)
+    times = librosa.times_like(rms, sr=sr, hop_length=hop) + offset
 
     # Voice activity: energy gate relative to the loud end of the clip, smoothed so
     # short consonant dips don't count as pauses.

@@ -94,24 +94,41 @@ def normalise(j: dict, source: str) -> dict:
 
 class ClaudeJudge:
     def __init__(self, model: str = DEFAULT_MODEL, effort: str = "medium", lang: str = "en",
-                 context: str = ""):
+                 context: str = "", max_turns: int | None = None, log=None):
         self.client = anthropic.Anthropic(max_retries=4)
         self.model = model
         self.effort = effort
         self.context = context
+        self.max_turns = max_turns
+        self.log = log or _stderr
         self.system = SYSTEM_PROMPT + "- " + LANGUAGE_RULES[lang] + "\n"
         self.messages: list[dict] = []
+        self.clip: dict | None = None
+        self.history: list[dict] = []  # (window, judgment) summaries, for conversation rollover
         self.usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
-    def _prompt(self, feats: dict, clip: dict | None) -> str:
+    def _intro(self, feats: dict) -> str:
+        clip = self.clip or {}
+        ctx = self.context or "none given"
+        if clip.get("live"):
+            text = f"Live camera session, judged window by window as it happens. Context from the user: {ctx}.\n"
+        else:
+            text = (f"Clip: {clip.get('duration', 0):.1f}s in {feats.get('of')} windows. "
+                    f"Context from the user: {ctx}.\n")
+        if clip.get("baseline"):
+            text += f"Clip baselines (medians): {json.dumps(clip['baseline'], separators=(',', ':'))}\n"
+        if self.history:
+            text += "Earlier windows, summarised (most recent last):\n" + "\n".join(
+                f"- W{h['window']}: {h['intent']} | confidence {h['confidence']:.2f}, focus {h['focus']:.2f}, "
+                f"tension {h['tension']:.2f}, valence {h['valence']:+.2f} | {h['reading']}"
+                for h in self.history[-6:]) + "\n"
+        return text + "\n"
+
+    def _prompt(self, feats: dict, first: bool) -> str:
         body = json.dumps(feats, ensure_ascii=False, separators=(",", ":"))
-        head = f'Window {feats["window"]}/{feats["of"]}:\n'
-        if clip is None:
-            return head + body
-        intro = (f"Clip: {clip['duration']:.1f}s in {feats['of']} windows. "
-                 f"Context from the user: {self.context or 'none given'}.\n"
-                 f"Clip baselines (medians): {json.dumps(clip['baseline'], separators=(',', ':'))}\n\n")
-        return intro + head + body
+        total = f"/{feats['of']}" if feats.get("of") else " (live)"
+        head = f"Window {feats['window']}{total}:\n"
+        return (self._intro(feats) if first else "") + head + body
 
     def judge(self, feats: dict, clip: dict | None = None) -> dict | None:
         """Judge one window. Returns None when this window should fall back to heuristics.
@@ -119,7 +136,14 @@ class ClaudeJudge:
         Raises anthropic.AuthenticationError / PermissionDeniedError / BadRequestError and
         TypeError (no credentials) so the caller can stop using Claude for the rest of the clip.
         """
-        self.messages.append({"role": "user", "content": self._prompt(feats, clip)})
+        if clip is not None:
+            self.clip = clip
+        turns = sum(1 for m in self.messages if m["role"] == "assistant")
+        if self.max_turns and turns >= self.max_turns:
+            # Long live sessions: start a fresh conversation (history stays append-only
+            # within each one) and carry the recent arc forward as a summary.
+            self.messages = []
+        self.messages.append({"role": "user", "content": self._prompt(feats, first=not self.messages)})
         extra = {}
         if self.model in FALLBACK_MODELS:
             extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
@@ -140,8 +164,8 @@ class ClaudeJudge:
                 isinstance(exc, anthropic.APIStatusError) and exc.status_code >= 500)
             if not transient:
                 raise
-            print(f"  window {feats['window']}: Claude unavailable ({exc.__class__.__name__}); "
-                  "using heuristics for this window", file=sys.stderr)
+            self.log(f"  window {feats['window']}: Claude unavailable ({exc.__class__.__name__}); "
+                     "using heuristics for this window")
             return None
 
         u = response.usage
@@ -151,8 +175,8 @@ class ClaudeJudge:
         self.usage["cache_write"] += u.cache_creation_input_tokens or 0
 
         if response.stop_reason != "end_turn":
-            print(f"  window {feats['window']}: Claude stopped with {response.stop_reason}; "
-                  "using heuristics for this window", file=sys.stderr)
+            self.log(f"  window {feats['window']}: Claude stopped with {response.stop_reason}; "
+                     "using heuristics for this window")
             self.messages.pop()
             return None
         text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
@@ -163,7 +187,9 @@ class ClaudeJudge:
             return None
         # Append the full content (thinking blocks included) so history stays append-only.
         self.messages.append({"role": "assistant", "content": response.content})
-        return normalise(data, "claude")
+        result = normalise(data, "claude")
+        self.history.append({"window": feats["window"], **result})
+        return result
 
 
 # --------------------------------------------------------------------------- heuristics
@@ -239,35 +265,54 @@ def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     }, "heuristic")
 
 
+def judge_or_fallback(judge: ClaudeJudge | None, feats: dict, clip: dict | None, lang: str, hand_label,
+                      log=None) -> tuple[dict, ClaudeJudge | None]:
+    """Judge one window with Claude when possible, else heuristics.
+
+    Returns the judgment and the judge to keep using (None once Claude is unusable,
+    e.g. missing credentials or a rejected request).
+    """
+    log = log or _stderr
+    result = None
+    if judge is not None:
+        try:
+            result = judge.judge(feats, clip)
+        except TypeError as exc:
+            log(f"No Anthropic credentials found ({exc}). Set ANTHROPIC_API_KEY to use Claude; "
+                "falling back to heuristic scoring.")
+            judge = None
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError,
+                anthropic.BadRequestError, anthropic.NotFoundError) as exc:
+            log(f"Claude request rejected ({exc.__class__.__name__}: {exc}); falling back to heuristic scoring.")
+            judge = None
+    if result is None:
+        result = heuristic_judgment(feats, lang, hand_label)
+    return result, judge
+
+
 def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: str, effort: str,
-              context: str, hand_label) -> list[dict]:
-    judge = None
-    if method == "claude":
-        judge = ClaudeJudge(model=model, effort=effort, lang=lang, context=context)
+              context: str, hand_label, log=None, progress=None) -> list[dict]:
+    log = log or _stderr
+    judge = ClaudeJudge(model=model, effort=effort, lang=lang, context=context, log=log) \
+        if method == "claude" else None
 
     results = []
     for i, feats in enumerate(windows):
-        result = None
-        if judge is not None:
-            try:
-                result = judge.judge(feats, clip if i == 0 else None)
-            except TypeError as exc:
-                print(f"No Anthropic credentials found ({exc}). Set ANTHROPIC_API_KEY to use Claude; "
-                      "falling back to heuristic scoring.", file=sys.stderr)
-                judge = None
-            except (anthropic.AuthenticationError, anthropic.PermissionDeniedError,
-                    anthropic.BadRequestError, anthropic.NotFoundError) as exc:
-                print(f"Claude request rejected ({exc.__class__.__name__}: {exc}); "
-                      "falling back to heuristic scoring.", file=sys.stderr)
-                judge = None
-        if result is None:
-            result = heuristic_judgment(feats, lang, hand_label)
+        result, judge = judge_or_fallback(judge, feats, clip if i == 0 else None, lang, hand_label, log)
         results.append(result)
-        print(f"  window {i + 1}/{len(windows)} [{result['source']}] {result['intent']}: {result['reading']}",
-              file=sys.stderr)
+        log(f"  window {i + 1}/{len(windows)} [{result['source']}] {result['intent']}: {result['reading']}")
+        if progress:
+            progress((i + 1) / len(windows))
 
     if judge is not None and judge.usage["input"]:
-        u = judge.usage
-        print(f"Claude usage: {u['input']} input + {u['cache_read']} cache-read + {u['cache_write']} "
-              f"cache-write input tokens, {u['output']} output tokens", file=sys.stderr)
+        log(usage_line(judge.usage))
     return results
+
+
+def usage_line(u: dict) -> str:
+    return (f"Claude usage: {u['input']} input + {u['cache_read']} cache-read + {u['cache_write']} "
+            f"cache-write input tokens, {u['output']} output tokens")
+
+
+def _stderr(msg: str) -> None:
+    print(msg, file=sys.stderr)

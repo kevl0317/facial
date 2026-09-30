@@ -4,8 +4,11 @@ __pycache__/
 .ruff_cache/
 .venv/
 
-# downloaded MediaPipe models
+# downloaded MediaPipe models and web runtime
 models/
+
+# web GUI state: uploaded jobs, self-signed certificate
+.facial/
 
 # pipeline outputs and caches
 *_work/
