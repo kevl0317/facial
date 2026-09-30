@@ -266,6 +266,7 @@ BROWSER_JEV = """
     calls.push({ url, body });
     if (url.endsWith("/systemone") || url.endsWith("/decisions")) {
       if (mode === "blocked" || (mode === "fallback" && url.endsWith("/systemone"))) throw new TypeError("Failed to fetch");
+      if (mode === "badkey") return Response.json({ error: { message: "No auth credentials found" } }, { status: 401 });
       if (mode === "unsure") {
         jevReply.answers.intent = { type: "choice", choice: "deflecting", confidence: 0.3,
                                     probabilities: { deflecting: 0.3, stating: 0.28 } };
@@ -318,6 +319,13 @@ def test_browser_jev_hands_unsure_windows_to_the_llm():
 def test_browser_jev_blocked_falls_back_to_the_llm_with_a_notice():
     out = _browser_jev("blocked")
     assert out["notices"] == ["Jev can't be reached from this page, using DeepSeek"]
+    assert out["first"]["source"] == "deepseek"
+
+
+@needs_node
+def test_browser_jev_says_which_key_was_refused():
+    out = _browser_jev("badkey")
+    assert out["notices"] == ["OpenRouter didn't accept the Jev key, using DeepSeek"]
     assert out["first"]["source"] == "deepseek"
 
 

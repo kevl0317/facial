@@ -369,7 +369,9 @@ class JevJudge {
         decision = await this.jev.decide(feats, this.lang, this.previous);
       } catch (err) {
         console.warn(err);
-        this.onNotice(notice("Jev", err, this.llm ? this.llm.name : "rules"));
+        const fallback = this.llm ? this.llm.name : "rules";
+        this.onNotice(err.reason === "key" ? `${this.jev.name} didn't accept the Jev key, using ${fallback}`
+          : notice("Jev", err, fallback));
         this.jev = null;
       }
     }
