@@ -49,6 +49,23 @@ export ANTHROPIC_API_KEY=sk-ant-...        # for the Claude judgment layer
 - **Chinese in rendered videos:** needs a CJK font. PingFang (macOS), Microsoft YaHei (Windows), and Noto CJK or WenQuanYi (Linux) are found automatically; otherwise pass `--font /path/to/font.ttc`. The live GUI uses the browser's fonts.
 - **Downloads on first run:** the MediaPipe models (~18 MB) and the MediaPipe web runtime (~35 MB) go into `models/`. The phone loads them from your computer, so it needs no internet access beyond the local network.
 
+## Open it from a link (no install)
+
+The whole app also runs **entirely in the browser**, with no server:
+
+- MediaPipe runs on the device.
+- The five fields, the voice analysis and the judge are ported to JavaScript. `tests/test_web.py` checks the port against the Python pipeline.
+- By default the judge is the transparent rule set. Add your own Claude API key in Settings to get Claude verdicts. The key is stored only in that browser and sent only to Anthropic.
+- **Live** uses the phone or laptop camera.
+- **Video** plays an uploaded file through the same engine, pausing for verdicts when needed, and saves an annotated recording plus the JSON.
+- The site is installable (add to home screen). A service worker caches the ~30 MB of models, so later visits start instantly and work offline.
+
+```bash
+python -m facial build-site --out site     # static site: index.html, static/, models/
+```
+
+It is deployed from the `gh-pages` branch. To publish it, open **Settings → Pages**, choose **Deploy from a branch → gh-pages / (root)**, and it appears at `https://<user>.github.io/<repo>/`. Any static host that serves HTTPS works, because phones only allow the camera on https:// pages.
+
 ## Web GUI: live camera on your phone, and video files
 
 ```bash
@@ -154,7 +171,9 @@ facial/
   render.py      Pillow HUD overlay and video writing
   media.py       ffmpeg helpers (clip, audio extraction, H.264 writer)
   models.py      MediaPipe model + web runtime download
-  web/           the GUI: index.html, style.css, app.js, live.js (camera engine), perception.js,
-                 hud.js (live overlay), intro.js (opening animation), hand.js (the cartoon glove), fonts/
+  webbuild.py    static site build (python -m facial build-site) + prompt.js generation
+  web/           the GUI: index.html, style.css, app.js, live.js (engine: camera or file, server or in-browser),
+                 perception.js, features.js, voice.js, judge.js, srt.js (browser ports), hud.js (overlay),
+                 intro.js (opening animation), hand.js (the cartoon glove), sw.js + manifest (PWA), vendor/, fonts/
 tests/           unit + API tests (python -m pytest)
 ```
