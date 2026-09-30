@@ -1,5 +1,6 @@
 import { CONFIG } from "./config.js";
 import { handSvg } from "./hand.js";
+import { Dropdown } from "./dropdown.js";
 import { playIntro } from "./intro.js";
 import { PROVIDERS, judgeReady, listModels } from "./judge.js";
 import { LiveEngine, loadTasks } from "./live.js";
@@ -141,22 +142,33 @@ function refreshJudgeChip() {
   else showJudge("Rules", p ? `Rule-based scoring; add a ${p.name} key in settings` : "Rule-based scoring");
 }
 
+// Themed lists for the provider picker and the model suggestions (set up below, static site only).
+let providerList = null;
+let modelList = null;
+const providerLabel = (id) => {
+  const p = PROVIDERS[id];
+  if (!p) return { value: "heuristic", label: "Rules", hint: "no AI" };
+  return { value: id, label: p.name, hint: p.maker === p.name ? "" : p.maker };
+};
+
 let modelCheck = 0;
+let lastCheck = { sig: "", ids: null };
 async function checkKey() {
   const s = ai();
   const p = PROVIDERS[s.provider];
   const field = $("#apiKey");
+  if (!p) { field.classList.remove("ok", "bad"); modelList.setItems([]); return; }
+  const fill = (ids) => modelList.setItems(ids.map((id) => ({ value: id, hint: id === p.model ? "default" : "" })));
+  const sig = JSON.stringify([s.provider, s.apiKey, s.baseUrl]);
+  if (sig === lastCheck.sig && lastCheck.ids) return; // already checked this key
   field.classList.remove("ok", "bad");
-  const list = $("#modelList");
-  list.innerHTML = "";
-  if (!p) return;
-  const fill = (ids) => { list.innerHTML = ids.map((id) => `<option value="${esc(id)}"></option>`).join(""); };
   fill(p.models);
   if (!judgeReady(s)) return;
   const n = ++modelCheck;
   try {
     const ids = await listModels(s);
     if (n !== modelCheck) return;
+    lastCheck = { sig, ids };
     if (p.key !== "none") field.classList.add("ok");
     if (ids.length) fill(ids);
   } catch (err) {
@@ -167,9 +179,11 @@ async function checkKey() {
 function showProvider() {
   const s = ai();
   const p = PROVIDERS[s.provider];
-  $("#provider").value = s.provider;
+  const { label, hint } = providerLabel(s.provider);
+  $("#provider").innerHTML = `<span class="dd-name">${esc(label)}</span>${hint ? `<span class="dd-hint">${esc(hint)}</span>` : ""}`;
+  providerList.value = s.provider;
   $("#keyRow").hidden = !p || p.key === "none";
-  $("#modelName").hidden = !p;
+  $("#modelBox").hidden = !p;
   $("#baseUrl").hidden = !p || !p.edit_base;
   if (p) {
     $("#apiKey").value = s.apiKey;
@@ -178,19 +192,37 @@ function showProvider() {
     if (p.key_url) $("#keyLink").href = p.key_url;
     $("#modelName").value = s.model;
     $("#modelName").placeholder = p.model || "Model";
+    modelList.value = s.model || p.model;
     $("#baseUrl").value = s.baseUrl;
     $("#baseUrl").placeholder = p.base_url || "https://…/v1";
   }
   refreshJudgeChip();
+  lastCheck = { sig: "", ids: null };
   checkKey();
 }
 
 if (STATIC) {
   $("#aiBox").hidden = false;
-  const label = (p) => (p.name === p.maker ? p.name : `${p.name} · ${p.maker}`);
-  $("#provider").innerHTML = Object.entries(PROVIDERS).map(([id, p]) => `<option value="${id}">${esc(label(p))}</option>`).join("")
-    + '<option value="heuristic">Rules · no AI</option>';
-  $("#provider").addEventListener("change", () => { save("provider", $("#provider").value); showProvider(); });
+  providerList = new Dropdown($("#provider"), {
+    label: "AI model provider",
+    onPick: (id) => { save("provider", id); showProvider(); $("#provider").focus(); },
+  });
+  providerList.setItems([...Object.keys(PROVIDERS), "heuristic"].map(providerLabel));
+  $("#provider").addEventListener("click", () => providerList.toggle());
+  $("#provider").addEventListener("keydown", (e) => providerList.key(e));
+
+  const model = $("#modelName");
+  modelList = new Dropdown(model, {
+    label: "Models",
+    onPick: (id) => { model.value = id; model.dispatchEvent(new Event("change")); },
+  });
+  model.addEventListener("focus", () => modelList.open());
+  model.addEventListener("click", () => { if (!modelList.isOpen) modelList.open(); });
+  model.addEventListener("input", () => modelList.open(model.value));
+  model.addEventListener("keydown", (e) => modelList.key(e));
+  model.addEventListener("blur", () => modelList.close());
+  $("#modelBtn").addEventListener("pointerdown", (e) => e.preventDefault()); // no keyboard pop-up on phones
+  $("#modelBtn").addEventListener("click", () => modelList.toggle());
   const keep = (sel, name) => $(sel).addEventListener("change", () => {
     store.set(`facial-${name}-${live.provider}`, $(sel).value.trim() || null);
     refreshJudgeChip();
