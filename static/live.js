@@ -148,7 +148,7 @@ class ServerBackend {
   close() { if (this.id) this.api(`api/live/sessions/${this.id}`, { method: "DELETE" }).catch(() => {}); }
 }
 
-/** Everything in the browser: the same five fields, then Claude (own key) or the rules. */
+/** Everything in the browser: the same five fields, then an AI model (own key) or the rules. */
 class LocalBackend {
   constructor(opts, onNotice) {
     this.opts = opts;
@@ -156,8 +156,8 @@ class LocalBackend {
     this.samples = [];
     this.index = 0;
     this.judgeImpl = new BrowserJudge({
-      apiKey: opts.apiKey, lang: opts.lang, context: opts.context,
-      handLabel: (h) => handLabel(h, opts.lang), onNotice,
+      provider: opts.provider, apiKey: opts.apiKey, model: opts.model, baseUrl: opts.baseUrl,
+      lang: opts.lang, context: opts.context, handLabel: (h) => handLabel(h, opts.lang), onNotice,
     });
   }
   get name() { return this.judgeImpl.name; }
@@ -327,7 +327,7 @@ export class LiveEngine {
 
   /**
    * opts: {file?: File, segments?: [{start,end,text}], lang, context, facing, mic, speech, skeleton,
-   *        windowSec, apiKey, record}
+   *        windowSec, provider, apiKey, model, baseUrl, record}
    */
   async start(opts) {
     this.opts = { lang: "en", context: "", facing: "user", mic: true, speech: true, skeleton: false, windowSec: 5, ...opts };

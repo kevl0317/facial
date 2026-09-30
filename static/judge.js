@@ -1,8 +1,16 @@
-// The judgment layer in the browser: Claude (with the viewer's own API key) or the
-// transparent rules. Ports ClaudeJudge / heuristic_judgment from facial/judge.py.
+// The judgment layer in the browser: an AI model with the viewer's own API key (Claude,
+// GPT, DeepSeek, Gemini, ...) or the transparent rules. Ports facial/judge.py.
 
 import { Anthropic } from "./vendor/anthropic-sdk.mjs";
-import { DEFAULT_MODEL, FALLBACK_MODELS, LANGUAGE_RULES, SCHEMA, SYSTEM_PROMPT } from "./prompt.js";
+import {
+  DEFAULT_MODEL, FALLBACK_MODELS, JSON_RULE, LANGUAGE_RULES, OPENAI_REASONING, PROVIDERS, SCHEMA, SYSTEM_PROMPT,
+  THINKING_MODELS,
+} from "./prompt.js";
+
+export { PROVIDERS };
+
+/** Short label for a judgment's source ("Claude", "GPT", ... or the rules). */
+export const judgeTag = (source, rules = "Rules") => PROVIDERS[source]?.name ?? rules;
 
 const clamp = (v, lo = 0, hi = 1) => {
   const n = Number(v);
@@ -80,11 +88,35 @@ export function heuristicJudgment(f, lang = "en", handLabel = null) {
   }, "heuristic");
 }
 
-/** One Claude conversation per session, one window per turn (ClaudeJudge in judge.py). */
-export class ClaudeJudge {
-  constructor({ apiKey, model = DEFAULT_MODEL, effort = "low", lang = "en", context = "", maxTurns = 24 }) {
-    this.client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 3 });
-    this.model = model;
+/** The judge can't be used this session. reason: "key" | "blocked" | "setup" | "rejected". */
+export class JudgeUnavailable extends Error {
+  constructor(message, reason = "rejected") {
+    super(message);
+    this.reason = reason;
+  }
+}
+
+/** The JSON object in a model's reply, tolerating code fences, <think> blocks and chatter. */
+export function extractJson(text) {
+  if (typeof text !== "string") return null;
+  const t = text.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a < 0 || b <= a) return null;
+  try {
+    const data = JSON.parse(t.slice(a, b + 1));
+    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+  } catch { return null; }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** One conversation per session, one window per turn (BaseJudge in judge.py). */
+class ConversationJudge {
+  constructor({ provider, model, effort = "low", lang = "en", context = "", maxTurns = 24 }) {
+    this.id = provider;
+    this.provider = PROVIDERS[provider];
+    this.name = this.provider.name;
+    this.model = model || this.provider.model;
     this.effort = effort;
     this.context = context;
     this.maxTurns = maxTurns;
@@ -109,7 +141,7 @@ export class ClaudeJudge {
     return `${text}\n`;
   }
 
-  /** Returns a judgment, or null for a transient failure; throws when Claude can't be used at all. */
+  /** Returns a judgment, or null for a transient failure; throws JudgeUnavailable when it can't be used. */
   async judge(feats, clip = null) {
     if (clip) this.clip = clip;
     const turns = this.messages.filter((m) => m.role === "assistant").length;
@@ -117,6 +149,29 @@ export class ClaudeJudge {
     const head = `Window ${feats.window}${feats.of ? `/${feats.of}` : " (live)"}:\n`;
     const first = !this.messages.length;
     this.messages.push({ role: "user", content: (first ? this.intro(feats) : "") + head + JSON.stringify(feats) });
+    let out;
+    try {
+      out = await this.call();
+    } catch (err) {
+      this.messages.pop();
+      throw err;
+    }
+    if (!out) { this.messages.pop(); return null; }
+    this.messages.push(out.assistant); // append-only history
+    const result = normalise(out.data, this.id);
+    this.history.push({ window: feats.window, ...result });
+    return result;
+  }
+}
+
+/** Claude through the Anthropic SDK (ClaudeJudge in judge.py). */
+export class ClaudeJudge extends ConversationJudge {
+  constructor({ apiKey, model = DEFAULT_MODEL, ...rest }) {
+    super({ provider: "claude", model, ...rest });
+    this.client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 3 });
+  }
+
+  async call() {
     const params = {
       model: this.model,
       max_tokens: 16000,
@@ -134,43 +189,146 @@ export class ClaudeJudge {
     try {
       response = await this.client.beta.messages.create(params);
     } catch (err) {
-      this.messages.pop();
       const transient = err instanceof Anthropic.RateLimitError || err instanceof Anthropic.APIConnectionError
         || (err instanceof Anthropic.APIError && err.status >= 500);
       if (transient) return null;
-      throw err;
+      const key = err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError;
+      throw new JudgeUnavailable(err.message, key ? "key" : "rejected");
     }
-    if (response.stop_reason !== "end_turn") { this.messages.pop(); return null; }
+    if (response.stop_reason !== "end_turn") return null;
     const text = [...response.content].reverse().find((b) => b.type === "text")?.text || "";
-    let data;
-    try { data = JSON.parse(text); } catch { this.messages.pop(); return null; }
-    this.messages.push({ role: "assistant", content: response.content }); // append-only history
-    const result = normalise(data, "claude");
-    this.history.push({ window: feats.window, ...result });
-    return result;
+    const data = extractJson(text);
+    return data && { data, assistant: { role: "assistant", content: response.content } };
   }
 }
 
-/** Which judge a browser session uses: Claude when a key is set (falls back per window), else rules. */
+/** Any OpenAI-compatible chat-completions API: OpenAI, DeepSeek, Gemini, Grok, Ollama... (ChatJudge). */
+export class ChatJudge extends ConversationJudge {
+  // Without prompt caching the whole history is re-sent each turn: keep conversations short.
+  constructor({ apiKey, baseUrl, fetchImpl, maxTurns = 12, ...rest }) {
+    super({ maxTurns, ...rest });
+    this.system += JSON_RULE;
+    this.apiKey = apiKey || "";
+    this.baseUrl = (baseUrl || this.provider.base_url || "").replace(/\/+$/, "");
+    this.fetch = fetchImpl || ((...a) => fetch(...a));
+    this.plain = false; // the provider rejected our optional parameters: send a bare request
+    this.reached = false;
+    this.retryMs = 1500;
+  }
+
+  body() {
+    const body = { model: this.model, messages: [{ role: "system", content: this.system }, ...this.messages] };
+    if (this.plain) return body;
+    const p = this.provider;
+    const thinking = new RegExp(THINKING_MODELS, "i").test(this.model);
+    body[this.id === "openai" ? "max_completion_tokens" : "max_tokens"] = thinking ? 16000 : 4000;
+    if (this.id === "openai" && new RegExp(OPENAI_REASONING).test(this.model)) {
+      body.reasoning_effort = { low: "low", medium: "medium" }[this.effort] || "high";
+    }
+    if (p.json === "schema") {
+      body.response_format = { type: "json_schema", json_schema: { name: "window_judgment", strict: true, schema: SCHEMA } };
+    } else if (p.json === "object") body.response_format = { type: "json_object" };
+    return body;
+  }
+
+  async call() {
+    if (!this.baseUrl) throw new JudgeUnavailable("No base URL", "setup");
+    if (this.provider.key === "required" && !this.apiKey) throw new JudgeUnavailable("No API key", "key");
+    const headers = { "Content-Type": "application/json" };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+    for (let attempt = 0; ;) {
+      let res = null;
+      let data = {};
+      try {
+        res = await this.fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(this.body()) });
+        data = await res.json().catch(() => ({}));
+        this.reached = true;
+      } catch (err) {
+        // A page can't tell a dropped connection from a provider that refuses browsers (CORS).
+        if (!this.reached) throw new JudgeUnavailable(err.message || String(err), "blocked");
+      }
+      const status = res ? res.status : 0;
+      if (res && res.ok) {
+        const choice = (data.choices || [])[0] || {};
+        let text = choice.message?.content;
+        if (Array.isArray(text)) text = text.map((part) => part?.text || "").join("");
+        const parsed = extractJson(text);
+        return parsed && { data: parsed, assistant: { role: "assistant", content: text } };
+      }
+      const detail = errorMessage(data) || `HTTP ${status}`;
+      if (status === 400 && !this.plain) { this.plain = true; continue; }
+      if (status === 401 || status === 403) throw new JudgeUnavailable(detail, "key");
+      if (status && ![408, 409, 429].includes(status) && status < 500) throw new JudgeUnavailable(detail, "rejected");
+      attempt += 1;
+      if (attempt > 2) return null;
+      await sleep(this.retryMs * 2 ** attempt);
+    }
+  }
+}
+
+function errorMessage(data) {
+  let err = data && (data.error ?? data);
+  if (Array.isArray(err)) err = err[0];
+  if (err && typeof err === "object") err = err.message || err.detail || "";
+  return String(err || "").slice(0, 200);
+}
+
+/** Is there enough in the settings to call this provider? */
+export function judgeReady({ provider, apiKey, baseUrl }) {
+  const p = PROVIDERS[provider];
+  return Boolean(p && (p.key !== "required" || apiKey) && (p.base_url || baseUrl));
+}
+
+/** The AI judge for these settings, or null for the rules. */
+export function makeJudge({ provider = "claude", apiKey, model, baseUrl, effort = "low", lang = "en", context = "", fetchImpl }) {
+  if (!judgeReady({ provider, apiKey, baseUrl })) return null;
+  const common = { model: model || undefined, effort, lang, context };
+  return PROVIDERS[provider].kind === "anthropic"
+    ? new ClaudeJudge({ apiKey, ...common })
+    : new ChatJudge({ provider, apiKey, baseUrl, fetchImpl, ...common });
+}
+
+const NOT_CHAT = /embed|tts|whisper|dall-e|image|audio|realtime|moderation|transcribe|search|computer-use|babbage|davinci|rerank|ocr|guard|veo|imagen|aqa|learnlm|video|speech/i;
+
+/** Model names the provider offers to this key (also a quick key check: throws with .status). */
+export async function listModels({ provider, apiKey, baseUrl, fetchImpl = (...a) => fetch(...a) }) {
+  const p = PROVIDERS[provider];
+  if (p.kind === "anthropic") {
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 0 });
+    const page = await client.models.list({ limit: 100 });
+    return page.data.map((m) => m.id);
+  }
+  const base = (baseUrl || p.base_url).replace(/\/+$/, "");
+  const res = await fetchImpl(`${base}/models`, { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+  const data = await res.json();
+  const ids = (data.data || data.models || []).map((m) => String(m.id || m.name || "").replace(/^models\//, ""));
+  return [...new Set(ids.filter((id) => id && !NOT_CHAT.test(id)))].sort();
+}
+
+/** Which judge a browser session uses: the chosen AI when it's set up (falls back per window), else rules. */
 export class BrowserJudge {
-  constructor({ apiKey, lang, context, handLabel, onNotice }) {
+  constructor({ provider = "claude", apiKey, model, baseUrl, lang, context, handLabel, onNotice, fetchImpl }) {
     this.lang = lang;
     this.handLabel = handLabel;
     this.onNotice = onNotice || (() => {});
-    this.claude = apiKey ? new ClaudeJudge({ apiKey, lang, context }) : null;
+    this.llm = makeJudge({ provider, apiKey, model, baseUrl, lang, context, fetchImpl });
   }
 
-  get name() { return this.claude ? "claude" : "heuristic"; }
+  get name() { return this.llm ? this.llm.id : "heuristic"; }
 
   async judge(feats, clip) {
-    if (this.claude) {
+    if (this.llm) {
       try {
-        const res = await this.claude.judge(feats, clip);
+        const res = await this.llm.judge(feats, clip);
         if (res) return res;
       } catch (err) {
-        this.onNotice(err instanceof Anthropic.AuthenticationError ? "Claude key rejected, using rules"
-          : `Claude unavailable (${err.status || err.name}), using rules`);
-        this.claude = null;
+        console.warn(err);
+        const n = this.llm.name;
+        this.onNotice(err.reason === "key" ? `${n} key rejected, using rules`
+          : err.reason === "blocked" ? `${n} can't be reached from this page, using rules`
+            : `${n} unavailable (${String(err.message).slice(0, 80)}), using rules`);
+        this.llm = null;
       }
     }
     return heuristicJudgment(feats, this.lang, this.handLabel);
