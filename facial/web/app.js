@@ -138,8 +138,9 @@ const ai = (p = live.provider) => ({
   baseUrl: store.get(`facial-base-${p}`) || "",
 });
 
-// Jev (fast decisions) goes through OpenRouter or TypeSafe; an OpenRouter key is shared with the model picker.
-if (!JEV_ROUTES[live.jevVia]) live.jevVia = "openrouter";
+// Jev (fast decisions). Web pages can only reach it through OpenRouter (TypeSafe's own API
+// refuses browsers), and the OpenRouter key is shared with the model picker.
+if (!JEV_ROUTES[live.jevVia] || (STATIC && !JEV_ROUTES[live.jevVia].browser)) live.jevVia = "openrouter";
 const jevSettings = () => ({
   jev: live.jev,
   jevVia: live.jevVia,
@@ -157,10 +158,9 @@ function refreshJudgeChip() {
   else showJudge("Rules", p ? `Rule-based scoring; add a ${p.name} key in settings` : "Rule-based scoring");
 }
 
-// Themed lists for the provider picker, the model suggestions and the Jev route (static site only).
+// Themed lists for the provider picker and the model suggestions (static site only).
 let providerList = null;
 let modelList = null;
-let jevList = null;
 const providerLabel = (id) => {
   const p = PROVIDERS[id];
   if (!p) return { value: "heuristic", label: "Rules", hint: "no AI" };
@@ -221,10 +221,8 @@ function showJev() {
   const s = jevSettings();
   const r = JEV_ROUTES[s.jevVia];
   $("#jevBox").hidden = !live.jev;
-  $("#jevVia").innerHTML = `<span class="dd-name">${esc(r.name)}</span><span class="dd-hint">Jev</span>`;
-  jevList.value = s.jevVia;
   $("#jevKey").value = s.jevKey;
-  $("#jevKey").placeholder = `${r.name} API key`;
+  $("#jevKey").placeholder = `${r.name} key for Jev`;
   $("#jevKeyLink").href = r.key_url;
   $("#jevModel").value = s.jevModel;
   $("#jevModel").placeholder = r.model;
@@ -234,16 +232,6 @@ function showJev() {
 if (STATIC) {
   $("#aiBox").hidden = false;
   $("#jevToggle").hidden = false;
-  jevList = new Dropdown($("#jevVia"), {
-    label: "How to reach Jev",
-    onPick: (via) => { save("jevVia", via); showJev(); $("#jevVia").focus(); },
-  });
-  jevList.setItems([
-    { value: "openrouter", label: "OpenRouter", hint: "one key for Jev + models" },
-    { value: "typesafe", label: "TypeSafe", hint: "Jev's own API" },
-  ]);
-  $("#jevVia").addEventListener("click", () => jevList.toggle());
-  $("#jevVia").addEventListener("keydown", (e) => jevList.key(e));
   $("#jevKey").addEventListener("change", () => {
     store.set(`facial-key-${live.jevVia}`, $("#jevKey").value.trim() || null);
     if (live.provider === live.jevVia) showProvider(); // the same OpenRouter key

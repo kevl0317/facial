@@ -90,6 +90,13 @@ export function loadTasks(onProgress) {
 
 // ---------------------------------------------------------------------------------- audio
 
+/**
+ * Wait for `promise`, but no longer than `ms`. On iPhones AudioContext.resume() can stay
+ * pending for good once the microphone or speech recognition takes the audio session,
+ * and that must never stall the app.
+ */
+const settle = (promise, ms) => Promise.race([promise, new Promise((r) => setTimeout(r, ms))]);
+
 async function openAudio(connect, preferred16k, unlocked) {
   const open = async (options) => {
     const ctx = unlocked || new AudioContext(options);
@@ -98,7 +105,7 @@ async function openAudio(connect, preferred16k, unlocked) {
     const source = connect(ctx);
     source.connect(node);
     node.connect(ctx.destination); // the tap outputs silence; connecting keeps it running
-    await ctx.resume();
+    await settle(ctx.resume(), 1500);
     return { ctx, node, source, chunks: [], sr: ctx.sampleRate };
   };
   if (preferred16k && !unlocked) {
@@ -403,6 +410,7 @@ export class LiveEngine {
     }
     if (this.audio) {
       this.audio.node.port.onmessage = (e) => {
+        this.lastPcm = performance.now();
         if (this.isFile && this.video.paused) return; // keep the audio timeline in step with playback
         if (this.audioT0 === null) this.audioT0 = Math.max(0, this.now() - e.data.length / this.audio.sr);
         this.audio.chunks.push(e.data);
@@ -424,6 +432,8 @@ export class LiveEngine {
 
     this.running = true;
     this.status(!this.isFile && this.opts.speech && !this.speech ? "No subtitles in this browser" : "");
+    this.lastPcm = performance.now();
+    if (!this.isFile && this.audio) this.audioWatch = setInterval(() => this.checkAudio(), 2000);
     this.loop();
     await this.play();
   }
@@ -468,8 +478,8 @@ export class LiveEngine {
   /** Start playback; some browsers (iOS Safari) need a fresh tap for sound, so report that. */
   async play() {
     try {
-      await this.audio?.ctx.resume();
-      await this.video.play();
+      if (this.audio) await settle(this.audio.ctx.resume(), 1500);
+      await settle(this.video.play(), 4000);
       this.needsTap = false;
     } catch (err) {
       if (err.name !== "NotAllowedError") throw err;
@@ -483,8 +493,23 @@ export class LiveEngine {
     if (this.video.paused) { this.userPaused = false; if (!this.waiting) this.play(); } else { this.userPaused = true; this.video.pause(); }
   }
 
+  /** Live mode: notice when Voice stops getting sound (another app or Subtitles took the mic). */
+  checkAudio() {
+    if (!this.running || !this.audio || this.audioHint || performance.now() - this.lastPcm < 4000) return;
+    this.audioHint = true;
+    settle(this.audio.ctx.resume(), 1500).catch(() => {});
+    this.status(this.speech ? "Voice has no sound. Tap the picture, or turn Subtitles off." : "Voice has no sound. Tap the picture.");
+    this.canvas.addEventListener("pointerdown", () => {
+      this.audio?.ctx.resume().catch(() => {});
+      this.audioHint = false;
+      this.lastPcm = performance.now();
+      this.status("");
+    }, { once: true });
+  }
+
   async stop() {
     this.running = false;
+    clearInterval(this.audioWatch);
     cancelAnimationFrame(this.raf);
     this.stream?.getTracks().forEach((tr) => tr.stop());
     this.speech?.stop();

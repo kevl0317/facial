@@ -22,11 +22,14 @@ from .net import JudgeUnavailable, _error_message, _post_json
 from .render import hand_label
 
 # How to reach Jev: TypeSafe's own API, or OpenRouter (one key for Jev and most LLMs).
+# TypeSafe's API sends no CORS headers, so web pages can only try OpenRouter ("browser").
+# OpenRouter also serves the same request at /api/alpha/decisions ("alt_urls").
 JEV_ROUTES = {
     "typesafe": {"name": "TypeSafe", "base_url": "https://api.typesafe.ai/v1", "model": "jev-latest",
-                 "env": ["TYPESAFE_API_KEY"], "key_url": "https://typesafe.ai"},
-    "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "typesafe/jev-latest",
-                   "env": ["OPENROUTER_API_KEY"], "key_url": "https://openrouter.ai/keys"},
+                 "env": ["TYPESAFE_API_KEY"], "key_url": "https://typesafe.ai", "browser": False, "alt_urls": []},
+    "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "typesafe/jev-1.13",
+                   "env": ["OPENROUTER_API_KEY"], "key_url": "https://openrouter.ai/keys", "browser": True,
+                   "alt_urls": ["https://openrouter.ai/api/alpha/decisions"]},
 }
 
 # Ordered levels, lowest first; the middle level is the speaker's usual self (0.5).

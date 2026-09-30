@@ -81,7 +81,7 @@ python -m facial clip.mp4 --srt clip.srt --jev --judge heuristic  # Jev alone, r
 python -m facial serve --jev --judge deepseek
 ```
 
-On the linked site, turn on **Jev** in Settings and paste an OpenRouter key (the same key can also serve as the AI model through OpenRouter). TypeSafe's own API reportedly refuses requests straight from web pages, so in the browser OpenRouter is the route to try first; the self-hosted server works with both.
+On the linked site, turn on **Jev** in Settings and paste an OpenRouter key (the same key can also serve as the AI model through OpenRouter); the model is `typesafe/jev-1.13`. TypeSafe's own API sends no CORS headers, so web pages can't call it at all and the site only offers OpenRouter (trying both of its Jev addresses, `/api/v1/systemone` and `/api/alpha/decisions`). If the browser still can't reach Jev, the app says so and the AI model decides instead; the self-hosted server has no such limit and works with both routes.
 
 Pick another model with `--model`, and point any provider at a different endpoint (a proxy, a regional endpoint such as `https://dashscope.aliyuncs.com/compatible-mode/v1` or `https://api.moonshot.cn/v1`) with `--base-url`. The providers and their defaults live in `facial/providers.py`.
 

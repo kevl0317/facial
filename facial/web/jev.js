@@ -167,7 +167,7 @@ export class JevClient {
     this.name = r.name;
     this.apiKey = apiKey;
     this.model = model || r.model;
-    this.url = `${r.base_url}/systemone`;
+    this.urls = [`${r.base_url}/systemone`, ...(r.alt_urls || [])];
     this.fetch = fetchImpl || ((...a) => fetch(...a));
     this.reached = false;
     this.retryMs = 500;
@@ -182,12 +182,16 @@ export class JevClient {
       let res = null;
       let data = {};
       try {
-        res = await this.fetch(this.url, { method: "POST", headers, body });
+        res = await this.fetch(this.urls[0], { method: "POST", headers, body });
         data = await res.json().catch(() => ({}));
         this.reached = true;
       } catch (err) {
-        // A page can't tell a dropped connection from an API that refuses browsers (CORS).
-        if (!this.reached) throw new JevUnavailable(err.message || String(err), "blocked");
+        // A page can't tell a dropped connection from an API that refuses browsers (CORS):
+        // until Jev has answered once, try the route's other address, then give up on it.
+        if (!this.reached) {
+          if (this.urls.length > 1) { this.urls.shift(); attempt -= 1; continue; }
+          throw new JevUnavailable(err.message || String(err), "blocked");
+        }
       }
       if (res && res.ok) return parseDecision(data, lang);
       const status = res ? res.status : 0;

@@ -137,17 +137,21 @@ export class Hud {
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
+    // Tall screens (phones held upright) get a compact layout that keeps the face clear.
+    const compact = portrait;
     if (state.skeleton) this.drawSkeleton(ctx, u, state.skeleton);
     this.drawChips(ctx, W, u, state);
-    if (state.hands && state.hands.length) this.drawGestures(ctx, W, H, u, state.hands);
+    if (state.hands && state.hands.length) this.drawGestures(ctx, W, H, u, state.hands, compact);
 
     const footTop = this.drawFooter(ctx, H, u, state.judge);
     const subTop = this.drawSubtitle(ctx, W, footTop - 8 * u, u, portrait, state.subtitle);
     if (!this.judgments.length) return;
     const panel = this.panelGeometry(W, H, u, portrait);
     if (portrait) {
-      const top = this.drawReading(ctx, 12 * u, Math.min(H - 90 * u, subTop - 20 * u), W - 28 * u, u);
+      const top = this.drawReading(ctx, 12 * u, compact ? subTop - 20 * u : Math.min(H - 90 * u, subTop - 20 * u), W - 28 * u, u, compact);
       panel.y0 = top - 14 * u - panel.ph;
+      this.drawCompactPanel(ctx, u, panel);
+      return;
     } else {
       this.drawReading(ctx, 18 * u, H - 104 * u, Math.min(W * 0.56, panel.x0 - 48 * u), u);
     }
@@ -182,17 +186,19 @@ export class Hud {
   }
 
   /** One sticker per hand (up to two), each with a colour-matched pointer to its hand. */
-  drawGestures(ctx, W, H, u, hands) {
+  drawGestures(ctx, W, H, u, hands, compact = false) {
     const x = 14 * u;
+    ctx.font = font(700, 10 * u);
+    const scoreW = compact ? ctx.measureText(`${this.s.vision} 0.00`).width + 22 * u : 0; // score inside the sticker
     const items = hands.map((hand, i) => {
-      let size = 19 * u;
+      let size = (compact ? 15 : 19) * u;
       ctx.font = font(700, size);
-      while (ctx.measureText(hand.label).width > W - 2 * x - 40 * u && size > 11) { size -= 1; ctx.font = font(700, size); }
-      const w = ctx.measureText(hand.label).width + 38 * u, h = size + 18 * u;
+      while (ctx.measureText(hand.label).width > W - 2 * x - 40 * u - scoreW && size > 11) { size -= 1; ctx.font = font(700, size); }
+      const w = ctx.measureText(hand.label).width + 38 * u + scoreW, h = size + (compact ? 12 : 18) * u;
       return { ...hand, size, w, h, colour: HAND_COLOURS[i] };
     });
-    let y = 46 * u;
-    for (const it of items) { it.y = y; y += it.h + 40 * u; }
+    let y = (compact ? 42 : 46) * u;
+    for (const it of items) { it.y = y; y += it.h + (compact ? 8 : 40) * u; }
 
     for (const it of items) { // pointers first, under the stickers
       const a = it.anchor;
@@ -215,16 +221,21 @@ export class Hud {
       ctx.font = font(700, it.size);
       ctx.fillStyle = T.ink;
       ctx.fillText(it.label, x + 28 * u, it.y + it.h / 2 + 0.5 * u);
-      pill(ctx, x + 8 * u, it.y + it.h + 16 * u, `${this.s.vision} ${it.score.toFixed(2)}`, u, { size: 11, fill: T.blue, color: T.white });
+      const score = `${this.s.vision} ${it.score.toFixed(2)}`;
+      if (compact) {
+        pill(ctx, x + it.w - scoreW + 2 * u, it.y + it.h / 2, score, u, { size: 10, fill: T.blue, color: T.white, shadow: 0, line: 1.5, pad: 6 });
+      } else {
+        pill(ctx, x + 8 * u, it.y + it.h + 16 * u, score, u, { size: 11, fill: T.blue, color: T.white });
+      }
     }
   }
 
   panelGeometry(W, H, u, portrait) {
-    const ph = 178 * u;
     if (portrait) {
-      const pw = Math.min(W - 28 * u, 300 * u);
-      return { x0: W - pw - 14 * u, y0: 0, pw, ph };
+      const pw = W - 28 * u;
+      return { x0: 14 * u, y0: 0, pw, ph: 100 * u };
     }
+    const ph = 178 * u;
     const pw = 262 * u;
     return { x0: W - pw - 22 * u, y0: H - 104 * u - ph, pw, ph };
   }
@@ -297,24 +308,89 @@ export class Hud {
     }
   }
 
+  /** The verdict for tall screens: title and mood, three bars side by side, then the intent. */
+  drawCompactPanel(ctx, u, { x0, y0, pw, ph }) {
+    const s = this.s;
+    const j = this.judgments[this.judgments.length - 1];
+    sticker(ctx, x0, y0, pw, ph, 16 * u, u, { shadow: 3 });
+
+    let cy = y0 + 19 * u;
+    ctx.font = font(700, 16 * u);
+    ctx.fillStyle = T.ink;
+    ctx.fillText(s.verdict, x0 + 12 * u, cy);
+    pill(ctx, x0 + 20 * u + ctx.measureText(s.verdict).width, cy, tag(j.source, s.rules), u, { size: 10, fill: T.yellow, shadow: 0, line: 1.5 });
+    const r = 5 * u, gap = 4 * u;
+    const n = Math.min(this.judgments.length, 8);
+    for (let i = 0; i < n; i++) {
+      const k = this.judgments.length - n + i, current = k === this.judgments.length - 1;
+      const cx = x0 + pw - 12 * u - r - (n - 1 - i) * (2 * r + gap);
+      ctx.beginPath(); ctx.arc(cx, cy, current ? r * 1.2 : r, 0, 2 * Math.PI);
+      ctx.fillStyle = valenceColour(this.judgments[k].valence);
+      ctx.fill();
+      ctx.lineWidth = 1.8 * u; ctx.strokeStyle = T.ink; ctx.stroke();
+    }
+
+    const bars = [["confidence", T.blue], ["focus", T.mint], ["tension", T.coral]];
+    const colGap = 10 * u, colW = (pw - 24 * u - 2 * colGap) / 3;
+    bars.forEach(([key, colour], i) => {
+      const bx = x0 + 12 * u + i * (colW + colGap);
+      const v = this.value(key);
+      ctx.font = font(600, 11 * u);
+      ctx.fillStyle = T.muted;
+      ctx.fillText(wrap(ctx, s[key], colW - 30 * u, 1)[0] || "", bx, y0 + 42 * u);
+      ctx.font = font(700, 11 * u);
+      ctx.fillStyle = T.ink;
+      const val = v.toFixed(2);
+      ctx.fillText(val, bx + colW - ctx.measureText(val).width, y0 + 42 * u);
+      const by = y0 + 51 * u, bh = 9 * u;
+      rr(ctx, bx, by, colW, bh, bh / 2);
+      ctx.fillStyle = T.paper; ctx.fill();
+      if (v > 0.01) {
+        ctx.save();
+        rr(ctx, bx, by, colW, bh, bh / 2);
+        ctx.clip();
+        ctx.fillStyle = colour;
+        ctx.fillRect(bx, by, colW * v, bh);
+        ctx.restore();
+      }
+      rr(ctx, bx, by, colW, bh, bh / 2);
+      ctx.lineWidth = 1.8 * u; ctx.strokeStyle = T.ink; ctx.stroke();
+    });
+
+    cy = y0 + ph - 19 * u;
+    ctx.font = font(600, 12 * u);
+    ctx.fillStyle = T.muted;
+    ctx.fillText(s.intent, x0 + 12 * u, cy);
+    const ix = x0 + 20 * u + ctx.measureText(s.intent).width;
+    const cert = j.intent_certainty.toFixed(2);
+    ctx.font = font(700, 10 * u);
+    const certW = ctx.measureText(cert).width + 14 * u;
+    pill(ctx, x0 + pw - 12 * u - certW, cy, cert, u, { size: 10, fill: T.blue, color: T.white, shadow: 0, line: 1.5 });
+    ctx.font = font(700, 15 * u);
+    ctx.fillStyle = T.ink;
+    ctx.fillText(wrap(ctx, j.intent, x0 + pw - 22 * u - certW - ix, 1)[0] || "", ix, cy);
+  }
+
   /** Speech bubble with the reading, bottom edge at `bottom`; returns its top. */
-  drawReading(ctx, left, bottom, maxW, u) {
+  drawReading(ctx, left, bottom, maxW, u, compact = false) {
     const k = this.judgments.length - 1;
     const j = this.judgments[k];
     if (!j.reading && !j.quote) return bottom;
     const tag = `W${k + 1}`;
     ctx.font = font(700, 12 * u);
     const tagW = ctx.measureText(tag).width + 16 * u;
-    ctx.font = font(500, 15 * u);
+    const size = compact ? 14 : 15, qSize = compact ? 12 : 13;
+    ctx.font = font(500, size * u);
     const lines = wrap(ctx, j.reading, maxW - 36 * u - tagW, 2);
-    const lineH = 21 * u;
-    ctx.font = font(600, 13 * u);
-    const qLines = j.quote ? wrap(ctx, `“${j.quote}”`, maxW - 44 * u, 1) : [];
-    const height = 16 * u + lines.length * lineH + (qLines.length ? 28 * u : 0);
+    const lineH = (compact ? 19 : 21) * u;
+    ctx.font = font(600, qSize * u);
+    // On tall screens the quote only shows when the reading fits on one line.
+    const qLines = j.quote && !(compact && lines.length > 1) ? wrap(ctx, `“${j.quote}”`, maxW - 44 * u, 1) : [];
+    const height = (compact ? 14 : 16) * u + lines.length * lineH + (qLines.length ? (compact ? 25 : 28) * u : 0);
     const top = bottom - height;
-    ctx.font = font(500, 15 * u);
+    ctx.font = font(500, size * u);
     let width = tagW + 8 * u + Math.max(...lines.map((l) => ctx.measureText(l).width));
-    ctx.font = font(600, 13 * u);
+    ctx.font = font(600, qSize * u);
     if (qLines.length) width = Math.max(width, ctx.measureText(qLines[0]).width + 16 * u);
     width += 28 * u;
 
@@ -330,12 +406,12 @@ export class Hud {
 
     let y = top + 8 * u + lineH / 2;
     pill(ctx, left + 12 * u, y, tag, u, { size: 12, fill: T.blue, color: T.white });
-    ctx.font = font(500, 15 * u);
+    ctx.font = font(500, size * u);
     ctx.fillStyle = T.ink;
     lines.forEach((l, i) => { ctx.fillText(l, left + 20 * u + tagW, y + i * lineH); });
     if (qLines.length) {
       y += lines.length * lineH + 4 * u;
-      pill(ctx, left + 12 * u, y, qLines[0], u, { size: 13, weight: 600, fill: T.yellow });
+      pill(ctx, left + 12 * u, y, qLines[0], u, { size: qSize, weight: 600, fill: T.yellow });
     }
     return top;
   }

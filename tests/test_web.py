@@ -264,8 +264,8 @@ BROWSER_JEV = """
   const fetchImpl = async (url, init) => {
     const body = JSON.parse(init.body);
     calls.push({ url, body });
-    if (url.endsWith("/systemone")) {
-      if (mode === "blocked") throw new TypeError("Failed to fetch");
+    if (url.endsWith("/systemone") || url.endsWith("/decisions")) {
+      if (mode === "blocked" || (mode === "fallback" && url.endsWith("/systemone"))) throw new TypeError("Failed to fetch");
       if (mode === "unsure") {
         jevReply.answers.intent = { type: "choice", choice: "deflecting", confidence: 0.3,
                                     probabilities: { deflecting: 0.3, stating: 0.28 } };
@@ -300,7 +300,7 @@ def test_browser_jev_decides_and_the_llm_writes():
     assert out["label"] == "Jev · DeepSeek"
     jev_call, llm_call = out["calls"]
     assert jev_call["url"] == "https://openrouter.ai/api/v1/systemone"
-    assert jev_call["body"]["model"] == "typesafe/jev-latest" and "Hands:" in jev_call["body"]["state"]
+    assert jev_call["body"]["model"] == "typesafe/jev-1.13" and "Hands:" in jev_call["body"]["state"]
     assert "Jev's decision for this window (settled)" in llm_call["body"]["messages"][-1]["content"]
     first = out["first"]
     assert first["source"] == "jev" and first["writer"] == "deepseek" and first["intent"] == "Explaining"
@@ -319,6 +319,15 @@ def test_browser_jev_blocked_falls_back_to_the_llm_with_a_notice():
     out = _browser_jev("blocked")
     assert out["notices"] == ["Jev can't be reached from this page, using DeepSeek"]
     assert out["first"]["source"] == "deepseek"
+
+
+@needs_node
+def test_browser_jev_tries_openrouters_other_address():
+    out = _browser_jev("fallback")
+    assert [c["url"] for c in out["calls"][:3]] == ["https://openrouter.ai/api/v1/systemone",
+                                                   "https://openrouter.ai/api/alpha/decisions",
+                                                   "https://api.deepseek.com/chat/completions"]
+    assert out["first"]["source"] == "jev" and out["notices"] == []
 
 
 @needs_node

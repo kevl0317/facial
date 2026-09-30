@@ -91,7 +91,7 @@ def test_jev_without_an_llm_uses_the_rule_templates_for_words():
                        hand_label=lambda h: hand_label(h, "en"), log=lambda m: None)
     judge.jev.post = lambda url, headers, body, timeout: jev_reply("stating", 0.9)
     result = judge.judge(_window())
-    assert judge.jev.base_url == "https://openrouter.ai/api/v1" and judge.jev.model == "typesafe/jev-latest"
+    assert judge.jev.base_url == "https://openrouter.ai/api/v1" and judge.jev.model == "typesafe/jev-1.13"
     assert result["source"] == "jev" and "writer" not in result
     assert result["reading"] == "Right hand · open palm (palm up) — Stating a position"
     assert result["quote"] == "We made a decision a long time ago"
