@@ -43,7 +43,7 @@ Upstream, computer vision (Google MediaPipe) and audio analysis have measured ea
 - speaker: whether the tracked on-screen person is the one talking ("target"), visibly listening while someone else talks ("listening"), off-screen, or silent. lip_sync is the correlation between their jaw movement and the audio loudness.
 - subtitle: what was said in this window.
 - voice: loudness and pitch relative to this speaker's own median in the clip (dB, semitones), pitch variability, share of time voiced, pauses, speech rate (words/s), filler words.
-- gesture: the dominant hand state (hand, shape, palm facing, axis) and a short sequence of hand states with times relative to the window start, gesture energy (hand-lengths per second), beat gestures, hand-to-face contact, head movement and gaze, facial blendshape averages (0-1), blink rate and posture.
+- gesture: the dominant hand state (hand, shape, palm facing, axis), the other hand's state when both hands are up (second) and the share of the window with both hands visible (two_hands), a short sequence of hand states with times relative to the window start, gesture energy (hand-lengths per second), beat gestures, hand-to-face contact, head movement and gaze, facial blendshape averages (0-1), blink rate and posture.
 
 Fuse the fields into one reading of the window:
 - reading: one vivid line of at most ~90 characters that ties the body language to what is being said, e.g. "Left hand spreads open as if laying out facts; the claim about culture comes out calm and firm." Lead with the gesture when there is one.
@@ -255,6 +255,9 @@ def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     intent = names[key]
 
     gesture_text = hand_label(dom) if (dom and hand_label) else ""
+    second = g.get("second")
+    if gesture_text and second:
+        gesture_text += " + " + hand_label(second)
     sep = "，" if lang == "zh" else " — "
     reading = f"{gesture_text}{sep}{intent}" if gesture_text else intent
     return normalise({

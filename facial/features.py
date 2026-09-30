@@ -166,6 +166,25 @@ def _gesture(S: list[dict], start: float) -> dict:
         out["dominant"] = {"hand": h["side"], "shape": h["shape"], "facing": h["facing"], "axis": h["axis"],
                            "score": round(score, 2), "share": round(frac, 2), "at_s": round(t - start, 1)}
 
+        # The other hand (a different track), when it is up for at least a fifth of the window.
+        main = h.get("track")
+        others: dict[str, float] = defaultdict(float)
+        example: dict[str, dict] = {}
+        for s in with_hands:
+            for x in s["hands"]:
+                if x.get("track") != main:
+                    k2 = hand_key(x)
+                    others[k2] += x["score"] * (1.0 + min(x.get("speed", 0.0), 4.0))
+                    example.setdefault(k2, x)
+        if others:
+            k2 = max(others, key=others.get)
+            share2 = sum(1 for s in S if any(hand_key(x) == k2 and x.get("track") != main for x in s["hands"])) / n
+            if share2 >= 0.2:
+                x = example[k2]
+                out["second"] = {"hand": x["side"], "shape": x["shape"], "facing": x["facing"], "axis": x["axis"],
+                                 "share": round(share2, 2)}
+    out["two_hands"] = round(sum(1 for s in S if len(s["hands"]) >= 2) / n, 2)
+
     # Short sequence of what the primary hand did, as runs >= 0.4 s.
     runs: list[list] = []
     for s in S:

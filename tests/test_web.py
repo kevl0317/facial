@@ -95,3 +95,70 @@ def test_voice_measurements_match_python():
     assert abs(py["loudness_rel_db"] - js["loudness_rel_db"]) <= 1.0
     assert abs(py["pitch_rel_st"] - js["pitch_rel_st"]) <= 0.5
     assert abs(py["pitch_var_st"] - js["pitch_var_st"]) <= 0.5
+
+
+SPEECH_HARNESS = """
+  import { Speech } from "./live.js";
+  const MODE = process.argv[1];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const result = (text, isFinal) => ({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal })] });
+  class FakeRecognition {  // behaves like a phone browser: ends after every sentence
+    static count = 0;
+    constructor() { this.n = ++FakeRecognition.count; }
+    start() {
+      const fail = (error) => setTimeout(() => { this.onerror?.({ error }); this.onend?.(); }, 5);
+      if (MODE === "refuse" && this.n === 2) return fail("not-allowed");
+      if (MODE === "throw" && this.n === 2) throw new Error("InvalidStateError");
+      if (MODE === "busy") return fail("audio-capture");
+      setTimeout(() => this.onresult?.(result(`sentence ${this.n} so`, false)), 10);
+      if (MODE === "cutoff" && this.n % 2 === 0) { setTimeout(() => this.onend?.(), 20); return; }
+      setTimeout(() => { this.onresult?.(result(`sentence ${this.n}`, true)); this.onend?.(); }, 20);
+    }
+    abort() {}
+  }
+  globalThis.window = { SpeechRecognition: FakeRecognition };
+  let t = 0;
+  const events = [];
+  const sp = new Speech("en", () => (t += 0.05), { onNeedsTap: () => events.push("tap"), onGiveUp: (m) => events.push(m) });
+  sp.start();
+  await sleep(1500);
+  if (MODE === "refuse") { sp.resume(); await sleep(500); }
+  sp.stop();
+  console.log(JSON.stringify({ texts: sp.take(0, 1e9).map((s) => s.text), events }));
+"""
+
+
+def _speech(mode: str) -> dict:
+    out = subprocess.run([NODE, "--input-type=module", "-e", SPEECH_HARNESS, mode], capture_output=True, text=True,
+                         cwd=WEB, check=True, timeout=30)
+    return json.loads(out.stdout)
+
+
+@needs_node
+def test_subtitles_keep_going_after_each_sentence():
+    res = _speech("phone")
+    assert len(res["texts"]) >= 5 and res["texts"][:2] == ["sentence 1", "sentence 2"]
+
+
+@needs_node
+def test_subtitles_keep_unfinished_sentences():
+    texts = _speech("cutoff")["texts"]
+    assert "sentence 2 so" in texts and "sentence 3" in texts  # a sentence cut off mid-way is still kept
+
+
+@needs_node
+def test_subtitles_retry_after_a_failed_restart():
+    assert len(_speech("throw")["texts"]) >= 2
+
+
+@needs_node
+def test_subtitles_ask_for_a_tap_when_the_browser_refuses_a_restart():
+    res = _speech("refuse")
+    assert res["events"] == ["tap"]
+    assert res["texts"][0] == "sentence 1" and len(res["texts"]) >= 2  # resumes after the tap
+
+
+@needs_node
+def test_subtitles_explain_a_microphone_clash():
+    res = _speech("busy")
+    assert res["texts"] == [] and len(res["events"]) == 1 and "Voice" in res["events"][0]

@@ -70,7 +70,8 @@ export function heuristicJudgment(f, lang = "en", handLabel = null) {
   else if (dom && dom.shape === "open_palm" && ["palm_up", "palm_down", "palm_out"].includes(dom.facing)) key = dom.facing;
   else key = "default";
   const intent = INTENTS[lang][key];
-  const gestureText = dom && handLabel ? handLabel(dom) : "";
+  let gestureText = dom && handLabel ? handLabel(dom) : "";
+  if (gestureText && g.second) gestureText += ` + ${handLabel(g.second)}`;
   const reading = gestureText ? `${gestureText}${lang === "zh" ? "，" : " — "}${intent}` : intent;
   return normalise({
     reading, quote: text ? quoteOf(text) : "", confidence, focus, tension, intent,

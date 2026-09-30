@@ -178,124 +178,54 @@ class LocalBackend {
 
 // ---------------------------------------------------------------------------------- speech
 
-/**
- * Browser speech recognition (Chrome, Edge, Safari) for live subtitles.
- *
- * Phone browsers end recognition after every sentence even in "continuous" mode, and
- * may refuse a restart that doesn't come from a tap. So each sentence gets a fresh
- * recognizer, failed restarts retry with backoff, and a refusal after it has already
- * worked asks for a tap instead of switching subtitles off for good.
- */
+/** Browser speech recognition (Chrome, Edge, Safari) for live subtitles. */
 export class Speech {
-  constructor(lang, now, { onNeedsTap, onGiveUp } = {}) {
+  constructor(lang, now) {
     this.lang = lang;
     this.now = now;
-    this.onNeedsTap = onNeedsTap || (() => {});
-    this.onGiveUp = onGiveUp || (() => {});
     this.pending = [];
     this.last = null;
     this.interim = "";
-    this.interimStart = null;
     this.gen = 0;
     this.starts = new Map();
-    this.heard = false; // true once any speech has been recognised
-    this.failures = 0;
-    this.captureFailures = 0;
   }
 
   start() {
-    this.SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!this.SR) return false;
-    this.running = true;
-    this.spawn();
-    return true;
-  }
-
-  spawn() {
-    if (!this.running) return;
-    const rec = new this.SR();
-    const gen = ++this.gen;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return false;
+    const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = this.lang === "zh" ? "zh-CN" : "en-US";
     rec.onresult = (e) => {
-      this.heard = true;
-      this.failures = 0;
-      this.captureFailures = 0;
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
-        const key = `${gen}:${i}`;
+        const key = `${this.gen}:${i}`;
         if (!this.starts.has(key)) this.starts.set(key, Math.max(0, this.now() - 0.8));
         if (res.isFinal) {
-          this.commit(res[0].transcript, this.starts.get(key));
-          this.starts.delete(key);
+          const text = res[0].transcript.trim();
+          if (text) { const seg = { start: this.starts.get(key), end: this.now(), text }; this.pending.push(seg); this.last = seg; }
+          this.interim = "";
         } else {
           this.interim = res[0].transcript;
-          this.interimStart = this.starts.get(key);
         }
       }
     };
-    rec.onerror = (e) => { this.lastError = e.error; };
+    rec.onerror = (e) => {
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(e.error)) this.disabled = e.error;
+    };
     rec.onend = () => {
-      if (rec !== this.rec) return;
-      // Keep a sentence the recognizer never finalised (phones often stop mid-sentence).
-      if (this.interim) this.commit(this.interim, this.interimStart);
-      if (!this.running) return;
-      const err = this.lastError;
-      this.lastError = null;
-      if (err === "not-allowed" || err === "service-not-allowed") {
-        if (!this.heard) { this.giveUp("Subtitles need microphone permission"); return; }
-        this.needsTap = true; // worked before: the browser wants a tap to listen again
-        this.onNeedsTap();
-        return;
-      }
-      if (err === "audio-capture") this.captureFailures += 1;
-      if (this.captureFailures >= 3 && !this.heard) {
-        this.giveUp("Subtitles can't share the microphone with Voice on this device. Turn Voice off to use them.");
-        return;
-      }
-      if (err && err !== "no-speech" && err !== "aborted") this.failures += 1;
-      const delay = err ? Math.min(3000, 200 * 2 ** Math.min(this.failures, 4)) : 50;
-      this.timer = setTimeout(() => this.spawn(), delay);
+      this.gen += 1;
+      this.starts.clear();
+      if (this.running && !this.disabled) { try { rec.start(); } catch { /* already starting */ } }
     };
     this.rec = rec;
-    try {
-      rec.start();
-    } catch {
-      this.failures += 1;
-      this.timer = setTimeout(() => this.spawn(), 1000);
-    }
-  }
-
-  commit(text, start) {
-    text = (text || "").trim();
-    this.interim = "";
-    this.interimStart = null;
-    if (!text) return;
-    const seg = { start: start ?? Math.max(0, this.now() - 2), end: this.now(), text };
-    this.pending.push(seg);
-    this.last = seg;
-  }
-
-  giveUp(message) {
-    this.running = false;
-    this.disabled = true;
-    this.onGiveUp(message);
-  }
-
-  /** Call from a tap: restarts listening when the browser asked for a gesture. */
-  resume() {
-    if (!this.needsTap || this.disabled) return;
-    this.needsTap = false;
     this.running = true;
-    this.spawn();
+    try { rec.start(); } catch { return false; }
+    return true;
   }
 
-  stop() {
-    this.running = false;
-    clearTimeout(this.timer);
-    try { this.rec && this.rec.abort(); } catch { /* not started */ }
-  }
+  stop() { this.running = false; try { this.rec && this.rec.stop(); } catch { /* not started */ } }
 
   take(start, end) {
     return this.pending.splice(0).map((s) => ({
@@ -406,13 +336,7 @@ export class LiveEngine {
     }
     this.speech = null;
     if (!this.isFile && this.opts.speech) {
-      const sp = new Speech(this.opts.lang, () => this.now(), {
-        onNeedsTap: () => {
-          this.status("Tap the picture to resume subtitles");
-          this.canvas.addEventListener("pointerdown", () => { sp.resume(); this.status(""); }, { once: true });
-        },
-        onGiveUp: (msg) => this.status(msg),
-      });
+      const sp = new Speech(this.opts.lang, () => this.now());
       if (sp.start()) this.speech = sp;
     }
     if (this.isFile) this.setupFile();
@@ -548,37 +472,29 @@ export class LiveEngine {
     else if (this.isFile && !v.paused) { this.waiting = true; v.pause(); } // wait for the verdict
   }
 
-  /** Up to two hands: the most active tracks over the last 0.8 s, each with its most common
-   * state over the last 0.4 s. A second hand needs to show in 40% of recent frames (no flicker). */
-  liveHands(t) {
+  liveHand(t) {
     const weights = new Map();
     for (const s of this.recent) {
       if (s.t < t - 0.8) continue;
       for (const h of s.hands) weights.set(h.track, (weights.get(h.track) || 0) + h.score * (1 + Math.min(h.speed, 4)));
     }
-    const recent = this.recent.filter((s) => s.t >= t - 0.4);
-    const out = [];
-    for (const [track] of [...weights.entries()].sort((a, b) => b[1] - a[1])) {
-      if (out.length === 2) break;
-      const same = [];
-      for (const s of recent) for (const h of s.hands) if (h.track === track) same.push([s.t, h]);
-      if (!same.length || (out.length === 1 && same.length < 0.4 * recent.length)) continue;
-      const counts = new Map();
-      for (const [, h] of same) {
-        const k = [h.side, h.shape, h.facing, h.axis].join("|");
-        counts.set(k, (counts.get(k) || 0) + 1);
-      }
-      const [side, shape, facing, axis] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split("|");
-      const [lastT, last] = same[same.length - 1];
-      out.push({
-        side, shape, facing, axis,
-        score: same.reduce((a, [, h]) => a + h.score, 0) / same.length,
-        anchor: t - lastT <= Math.max(0.3, 2.5 * this.tracker.dt) ? last.anchor : null,
-      });
+    if (!weights.size) return null;
+    const track = [...weights.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const same = [];
+    for (const s of this.recent) if (s.t >= t - 0.4) for (const h of s.hands) if (h.track === track) same.push([s.t, h]);
+    if (!same.length) return null;
+    const counts = new Map();
+    for (const [, h] of same) {
+      const k = [h.side, h.shape, h.facing, h.axis].join("|");
+      counts.set(k, (counts.get(k) || 0) + 1);
     }
-    // Top label = leftmost hand on screen, so the two pointers don't cross.
-    const screenX = (h) => (h.anchor ? (this.mirror ? 1 - h.anchor[0] : h.anchor[0]) : 2);
-    return out.sort((a, b) => screenX(a) - screenX(b));
+    const [side, shape, facing, axis] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split("|");
+    const [lastT, last] = same[same.length - 1];
+    return {
+      side, shape, facing, axis,
+      score: same.reduce((a, [, h]) => a + h.score, 0) / same.length,
+      anchor: t - lastT <= Math.max(0.3, 2.5 * this.tracker.dt) ? last.anchor : null,
+    };
   }
 
   render(t) {
@@ -613,6 +529,7 @@ export class LiveEngine {
     const toPx = ([nx, ny]) => [ox + (this.mirror ? 1 - nx : nx) * dw, oy + ny * dh];
 
     const latest = this.recent[this.recent.length - 1];
+    const live = this.liveHand(t);
     let skeleton = null;
     if (this.opts.skeleton && latest) {
       let faceBox = null;
@@ -632,7 +549,7 @@ export class LiveEngine {
       t,
       total: this.isFile ? this.total : null,
       shot: shotType(latest && latest.face ? latest.face.size : null),
-      hands: this.liveHands(t).map((h) => ({ label: handLabel(h, this.opts.lang), score: h.score, anchor: h.anchor && toPx(h.anchor) })),
+      live: live ? { label: handLabel(live, this.opts.lang), score: live.score, anchor: live.anchor && toPx(live.anchor) } : null,
       subtitle: this.subtitleAt(t),
       judge: this.hud.judgments.length ? this.hud.judgments[this.hud.judgments.length - 1].source : this.judgeName,
       status,

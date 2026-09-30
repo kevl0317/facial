@@ -39,6 +39,7 @@ export const THEME = {
   blue: "#5b6cff", yellow: "#ffc83d", coral: "#ff6b6b", mint: "#33d1a0", orange: "#ff9f43",
 };
 const T = THEME;
+const HAND_COLOURS = [THEME.yellow, THEME.mint]; // pointer + dot colour per hand label
 const HAND_EDGES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
   [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
 
@@ -119,7 +120,7 @@ export class Hud {
   }
 
   /**
-   * state: {t, shot, live: {label, score, anchor:[x,y]} | null, subtitle, judge,
+   * state: {t, shot, hands: [{label, score, anchor:[x,y]}] (up to two), subtitle, judge,
    *         status: {kind: "live"|"judging"|"collecting", text}, skeleton: {hands, face} | null}
    * Coordinates are CSS pixels; the caller sets the device-pixel transform.
    */
@@ -131,7 +132,7 @@ export class Hud {
     ctx.lineCap = "round";
     if (state.skeleton) this.drawSkeleton(ctx, u, state.skeleton);
     this.drawChips(ctx, W, u, state);
-    if (state.live) this.drawGesture(ctx, W, H, u, state.live);
+    if (state.hands && state.hands.length) this.drawGestures(ctx, W, H, u, state.hands);
 
     const footTop = this.drawFooter(ctx, H, u, state.judge);
     const subTop = this.drawSubtitle(ctx, W, footTop - 8 * u, u, portrait, state.subtitle);
@@ -173,31 +174,42 @@ export class Hud {
     }
   }
 
-  drawGesture(ctx, W, H, u, live) {
-    const x = 14 * u, y = 46 * u;
-    let size = 19 * u;
-    ctx.font = font(700, size);
-    while (ctx.measureText(live.label).width > W - 2 * x - 28 * u && size > 11) { size -= 1; ctx.font = font(700, size); }
-    const tw = ctx.measureText(live.label).width;
-    const w = tw + 24 * u, h = size + 18 * u;
+  /** One sticker per hand (up to two), each with a colour-matched pointer to its hand. */
+  drawGestures(ctx, W, H, u, hands) {
+    const x = 14 * u;
+    const items = hands.map((hand, i) => {
+      let size = 19 * u;
+      ctx.font = font(700, size);
+      while (ctx.measureText(hand.label).width > W - 2 * x - 40 * u && size > 11) { size -= 1; ctx.font = font(700, size); }
+      const w = ctx.measureText(hand.label).width + 38 * u, h = size + 18 * u;
+      return { ...hand, size, w, h, colour: HAND_COLOURS[i] };
+    });
+    let y = 46 * u;
+    for (const it of items) { it.y = y; y += it.h + 40 * u; }
 
-    // Pointer from the nearest edge of the sticker to the hand (drawn first, under it).
-    const a = live.anchor;
-    if (a && a[0] >= 0 && a[0] <= W && a[1] >= 0 && a[1] <= H) {
-      const sx = Math.min(Math.max(a[0], x), x + w), sy = Math.min(Math.max(a[1], y), y + h);
+    for (const it of items) { // pointers first, under the stickers
+      const a = it.anchor;
+      if (!a || a[0] < 0 || a[0] > W || a[1] < 0 || a[1] > H) continue;
+      const sx = Math.min(Math.max(a[0], x), x + it.w), sy = Math.min(Math.max(a[1], it.y), it.y + it.h);
       for (const [colour, width] of [[T.white, 9], [T.ink, 4]]) {
         ctx.strokeStyle = colour;
         ctx.lineWidth = width * u;
         ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(a[0], a[1]); ctx.stroke();
       }
       ctx.beginPath(); ctx.arc(a[0], a[1], 8 * u, 0, 2 * Math.PI);
-      ctx.fillStyle = T.yellow; ctx.fill();
+      ctx.fillStyle = it.colour; ctx.fill();
       ctx.lineWidth = 3 * u; ctx.strokeStyle = T.ink; ctx.stroke();
     }
-    sticker(ctx, x, y, w, h, 14 * u, u, { shadow: 3 });
-    ctx.fillStyle = T.ink;
-    ctx.fillText(live.label, x + 12 * u, y + h / 2 + 0.5 * u);
-    pill(ctx, x + 8 * u, y + h + 16 * u, `${this.s.vision} ${live.score.toFixed(2)}`, u, { size: 11, fill: T.blue, color: T.white });
+    for (const it of items) {
+      sticker(ctx, x, it.y, it.w, it.h, 14 * u, u, { shadow: 3 });
+      ctx.beginPath(); ctx.arc(x + 16 * u, it.y + it.h / 2, 6 * u, 0, 2 * Math.PI);
+      ctx.fillStyle = it.colour; ctx.fill();
+      ctx.lineWidth = 2 * u; ctx.strokeStyle = T.ink; ctx.stroke();
+      ctx.font = font(700, it.size);
+      ctx.fillStyle = T.ink;
+      ctx.fillText(it.label, x + 28 * u, it.y + it.h / 2 + 0.5 * u);
+      pill(ctx, x + 8 * u, it.y + it.h + 16 * u, `${this.s.vision} ${it.score.toFixed(2)}`, u, { size: 11, fill: T.blue, color: T.white });
+    }
   }
 
   panelGeometry(W, H, u, portrait) {

@@ -58,6 +58,7 @@ BLUE = (91, 108, 255)
 YELLOW = (255, 200, 61)
 CORAL = (255, 107, 107)
 MINT = (51, 209, 160)
+HAND_COLOURS = (YELLOW, MINT)  # pointer + dot colour per hand label
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11),
               (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)]
@@ -209,25 +210,29 @@ class Overlay:
         found = before or after
         return found[1] if found else None
 
-    def _live_hand(self, t: float) -> dict | None:
-        """The most active hand over the last 0.8 s, with its most common state over the
-        last 0.4 s, so the label neither flickers nor jumps between hands."""
+    def _live_hands(self, t: float) -> list[dict]:
+        """Up to two hands: the most active tracks over the last 0.8 s, each with its most common
+        state over the last 0.4 s. A second hand needs to show in 40% of recent frames (no flicker)."""
         i0 = bisect.bisect_left(self.sample_t, t - 0.8)
         i1 = bisect.bisect_right(self.sample_t, t)
         weights: dict[int, float] = {}
         for s in self.samples[i0:i1]:
             for h in s["hands"]:
                 weights[h["track"]] = weights.get(h["track"], 0.0) + h["score"] * (1.0 + min(h["speed"], 4.0))
-        if not weights:
-            return None
-        track = max(weights, key=weights.get)
-        same = [h for s in self.samples[i0:i1] if s["t"] >= t - 0.4 for h in s["hands"] if h["track"] == track]
-        if not same:
-            return None
-        side, shape, facing, axis = Counter(
-            (h["side"], h["shape"], h["facing"], h["axis"]) for h in same).most_common(1)[0][0]
-        return {"side": side, "shape": shape, "facing": facing, "axis": axis,
-                "score": float(np.mean([h["score"] for h in same])), "anchor": self._anchor(track, t)}
+        recent = [s for s in self.samples[i0:i1] if s["t"] >= t - 0.4]
+        out: list[dict] = []
+        for track in sorted(weights, key=weights.get, reverse=True):
+            if len(out) == 2:
+                break
+            same = [h for s in recent for h in s["hands"] if h["track"] == track]
+            if not same or (out and len(same) < 0.4 * len(recent)):
+                continue
+            side, shape, facing, axis = Counter(
+                (h["side"], h["shape"], h["facing"], h["axis"]) for h in same).most_common(1)[0][0]
+            out.append({"side": side, "shape": shape, "facing": facing, "axis": axis,
+                        "score": float(np.mean([h["score"] for h in same])), "anchor": self._anchor(track, t)})
+        # Top label = leftmost hand on screen, so the two pointers don't cross.
+        return sorted(out, key=lambda h: h["anchor"][0] if h["anchor"] else 2.0)
 
     def _value(self, k: int, key: str, t: float) -> float:
         cur = self.judgments[k][key]
@@ -292,32 +297,38 @@ class Overlay:
         self._pill(d, x, cy, shot_type(sample["face"]["size"] if sample and sample["face"] else None), weight=600)
 
     def _draw_gesture(self, d, t):
-        live = self._live_hand(t)
-        if not live:
-            return
+        """One sticker per hand (up to two), each with a colour-matched pointer to its hand."""
+        hands = self._live_hands(t)
         u, W, H = self.u, self.W, self.H
         x, y = 14 * u, 46 * u
-        label = hand_label(live, self.lang)
-        size = 19 * u
-        font = self.fonts.get(700, size, label)
-        while d.textlength(label, font=font) > W - 2 * x - 28 * u and size > 11:
-            size -= 1
+        items = []
+        for hand, colour in zip(hands, HAND_COLOURS):
+            label = hand_label(hand, self.lang)
+            size = 19 * u
             font = self.fonts.get(700, size, label)
-        w = d.textlength(label, font=font) + 24 * u
-        h = size + 18 * u
+            while d.textlength(label, font=font) > W - 2 * x - 40 * u and size > 11:
+                size -= 1
+                font = self.fonts.get(700, size, label)
+            w, h = d.textlength(label, font=font) + 38 * u, size + 18 * u
+            items.append((hand, label, font, w, h, y, colour))
+            y += h + 40 * u
 
-        a = live["anchor"]
-        if a is not None:
-            ax, ay = a[0] * W, a[1] * H
-            sx, sy = min(max(ax, x), x + w), min(max(ay, y), y + h)
+        for hand, _, _, w, h, top, colour in items:  # pointers first, under the stickers
+            if hand["anchor"] is None:
+                continue
+            ax, ay = hand["anchor"][0] * W, hand["anchor"][1] * H
+            sx, sy = min(max(ax, x), x + w), min(max(ay, top), top + h)
             d.line([(sx, sy), (ax, ay)], fill=WHITE, width=self._px(9))
             d.line([(sx, sy), (ax, ay)], fill=INK, width=self._px(4))
             r = 8 * u
-            d.ellipse([ax - r, ay - r, ax + r, ay + r], fill=YELLOW, outline=INK, width=self._px(3))
-        self._sticker(d, x, y, w, h, 14 * u, shadow=3)
-        d.text((x + 12 * u, y + h / 2 + 0.5 * u), label, font=font, fill=INK, anchor="lm")
-        self._pill(d, x + 8 * u, y + h + 16 * u, f"{self.str['vision']} {live['score']:.2f}", size=11,
-                   fill=BLUE, color=WHITE)
+            d.ellipse([ax - r, ay - r, ax + r, ay + r], fill=colour, outline=INK, width=self._px(3))
+        for hand, label, font, w, h, top, colour in items:
+            self._sticker(d, x, top, w, h, 14 * u, shadow=3)
+            cx, cy, r = x + 16 * u, top + h / 2, 6 * u
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=colour, outline=INK, width=self._px(2))
+            d.text((x + 28 * u, cy + 0.5 * u), label, font=font, fill=INK, anchor="lm")
+            self._pill(d, x + 8 * u, top + h + 16 * u, f"{self.str['vision']} {hand['score']:.2f}", size=11,
+                       fill=BLUE, color=WHITE)
 
     def _panel_geometry(self):
         u = self.u
