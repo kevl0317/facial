@@ -217,6 +217,28 @@ function showProvider() {
   checkKey();
 }
 
+/** Jev's key box: OpenRouter keys start with sk-or-; check the key with OpenRouter when we can. */
+let jevCheck = 0;
+async function checkJevKey() {
+  const key = jevSettings().jevKey;
+  const field = $("#jevKey");
+  field.classList.remove("ok", "bad");
+  if (!live.jev || !key) return;
+  if (live.jevVia === "openrouter" && !key.startsWith("sk-or-")) {
+    field.classList.add("bad");
+    toast("Jev here needs an OpenRouter key (sk-or-…). TypeSafe keys can't be used from a web page.");
+    return;
+  }
+  if (live.jevVia !== "openrouter") return;
+  const n = ++jevCheck;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${key}` } });
+    if (n !== jevCheck) return;
+    if (res.ok) field.classList.add("ok");
+    else if ([401, 403].includes(res.status)) { field.classList.add("bad"); toast("OpenRouter didn't accept that key."); }
+  } catch { /* can't check from here; the first verdict will tell */ }
+}
+
 function showJev() {
   const s = jevSettings();
   const r = JEV_ROUTES[s.jevVia];
@@ -227,6 +249,7 @@ function showJev() {
   $("#jevModel").value = s.jevModel;
   $("#jevModel").placeholder = r.model;
   refreshJudgeChip();
+  checkJevKey();
 }
 
 if (STATIC) {
@@ -234,8 +257,10 @@ if (STATIC) {
   $("#jevToggle").hidden = false;
   $("#jevKey").addEventListener("change", () => {
     store.set(`facial-key-${live.jevVia}`, $("#jevKey").value.trim() || null);
+    toast("");
     if (live.provider === live.jevVia) showProvider(); // the same OpenRouter key
     refreshJudgeChip();
+    checkJevKey();
   });
   $("#jevModel").addEventListener("change", () => store.set(`facial-jevmodel-${live.jevVia}`, $("#jevModel").value.trim() || null));
   providerList = new Dropdown($("#provider"), {
