@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .jev import JEV_ROUTES, jev_settings
 from .providers import PROVIDERS, RULES
 from .pipeline import Options, run
 
@@ -22,6 +23,16 @@ JUDGE_HELP = ("who judges each window: an AI provider (" + ", ".join(PROVIDERS) 
               "OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY; without one it falls back to heuristic")
 MODEL_HELP = "model name (default per provider: " + ", ".join(
     f"{k} {v['model']}" for k, v in PROVIDERS.items() if v["model"]) + ")"
+
+
+def add_jev_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--jev", action="store_true",
+                   help="let Jev (TypeSafe AI's fast decision model) decide each window's scores and intent; "
+                        "the --judge model then only writes the words, and decides when Jev is unsure")
+    p.add_argument("--jev-via", choices=tuple(JEV_ROUTES),
+                   help="reach Jev through TypeSafe (TYPESAFE_API_KEY) or OpenRouter (OPENROUTER_API_KEY); "
+                        "default: whichever key is set")
+    p.add_argument("--jev-model", help="Jev model (default: jev-latest)")
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -44,6 +55,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--model", help=MODEL_HELP)
     p.add_argument("--base-url", help="API base URL (needed for --judge custom; overrides the provider's)")
     p.add_argument("--effort", choices=EFFORTS, default="medium", help="reasoning effort (default: medium)")
+    add_jev_args(p)
     p.add_argument("--context", default="", help='who/what the clip is, e.g. "CEO keynote Q&A about export rules"')
     p.add_argument("--window", type=float, default=5.0, help="target window length in seconds (default 5)")
     p.add_argument("--analysis-fps", type=float, default=15.0, help="frames/s to run MediaPipe on (default 15)")
@@ -73,6 +85,7 @@ def parse_serve_args(argv) -> argparse.Namespace:
     p.add_argument("--effort", choices=EFFORTS, default="medium", help="effort for video-file jobs")
     p.add_argument("--live-effort", choices=EFFORTS, default="low",
                    help="effort for live windows (default: low, for fast verdicts)")
+    add_jev_args(p)
     return p.parse_args(argv)
 
 
@@ -92,7 +105,8 @@ def main(argv=None) -> int:
 
         a = parse_serve_args(argv[1:])
         serve(host=a.host, port=a.port, https=not a.no_https, token=a.token, judge=a.judge, model=a.model,
-              base_url=a.base_url, effort=a.effort, live_effort=a.live_effort)
+              base_url=a.base_url, effort=a.effort, live_effort=a.live_effort,
+              jev=jev_settings(a.jev, a.jev_via, a.jev_model))
         return 0
 
     args = parse_args(argv)

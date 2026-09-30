@@ -43,7 +43,8 @@ def _clean_sample(s: dict) -> dict | None:
 
 class LiveSession:
     def __init__(self, lang: str = "en", context: str = "", judge: str = "claude",
-                 model: str | None = None, effort: str = "low", log=None, base_url: str | None = None):
+                 model: str | None = None, effort: str = "low", log=None, base_url: str | None = None,
+                 jev: dict | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.lang = lang
         self.log = log
@@ -54,7 +55,7 @@ class LiveSession:
         self.windows: list[dict] = []
         self.judgments: list[dict] = []
         self.judge = make_judge(judge, model=model, effort=effort, lang=lang, context=context, max_turns=24,
-                                log=log, base_url=base_url)
+                                log=log, base_url=base_url, jev=jev, hand_label=lambda h: hand_label(h, lang))
         self.last_seen = time.time()
 
     def _add_audio(self, audio_b64: str, sr: int, t0: float) -> None:

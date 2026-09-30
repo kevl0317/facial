@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .features import shot_type
 from .media import VideoInfo, VideoWriter
-from .providers import judge_tag
+from .providers import judge_label, judge_tag
 
 STRINGS = {
     "en": {
@@ -169,8 +169,8 @@ class Overlay:
         self.skeleton = skeleton
         self.fonts = Fonts(font)
         self.str = STRINGS[lang]
-        ai = next((j["source"] for j in judgments if j["source"] != "heuristic"), "heuristic")
-        self.judge_name = judge_tag(ai, self.str["rules"])
+        ai = next((j for j in judgments if j["source"] != "heuristic"), {"source": "heuristic"})
+        self.judge_name = judge_label(ai, self.str["rules"])
 
     # -- lookups -------------------------------------------------------------
     def _window(self, t: float) -> int:

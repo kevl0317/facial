@@ -211,3 +211,118 @@ def test_browser_judge_talks_to_other_providers_and_falls_back_to_rules():
     assert out["badkey"]["notices"] == ["DeepSeek key rejected, using rules"]
     assert out["noKey"] == "heuristic"
     assert out["models"] == ["deepseek-chat", "deepseek-reasoner"]
+
+
+JEV_REPLY = {"answers": {
+    "confidence": {"type": "score", "score": 3.2, "confidence": 0.5},
+    "focus": {"type": "score", "probabilities": {"0": 0, "1": 0.1, "2": 0.5, "3": 0.4, "4": 0}},
+    "tension": {"type": "score", "score": 0.6},
+    "valence": {"type": "score", "score": 2.5},
+    "intent": {"type": "choice", "choice": "explaining", "confidence": 0.7,
+               "probabilities": {"explaining": 0.74, "stating": 0.26}}}}
+
+
+@needs_node
+def test_jev_description_and_decision_match_python():
+    from facial.jev import describe, parse_decision
+
+    from .test_jev import _window
+
+    windows = [_window()]
+    samples = _samples(n=60, fps=10.0)
+    add_hand_motion(samples, aspect=16 / 9)
+    windows.append(window_features(0, 2, (0.0, 6.0), samples, None, [Segment(0.5, 3.5, "So, um, what now?")],
+                                   clip_baseline(samples)))
+    quiet = json.loads(json.dumps(windows[0]))
+    quiet["voice"] = {"voiced_frac": 0.05}
+    quiet["gesture"] = {"hands_visible": 0.0}
+    quiet["speaker"] = {"state": "silent"}
+    windows.append(quiet)
+    decision = parse_decision(JEV_REPLY, "zh")
+    py = {"texts": [describe(w) for w in windows] + [describe(windows[0], decision)],
+          "decision": decision}
+
+    js = _node("""
+      import { readFileSync } from "node:fs";
+      import { describe, parseDecision } from "./jev.js";
+      const { windows, reply } = JSON.parse(readFileSync(0, "utf8"));
+      const decision = parseDecision(reply, "zh");
+      console.log(JSON.stringify({ texts: [...windows.map((w) => describe(w)), describe(windows[0], decision)], decision }));
+    """, {"windows": windows, "reply": JEV_REPLY})
+    for a, b in zip(py["texts"], js["texts"]):
+        assert a == b
+    _close(py["decision"], js["decision"])
+
+
+BROWSER_JEV = """
+  import { BrowserJudge } from "./judge.js";
+  import { handLabel } from "./hud.js";
+  const { feats, jevReply, mode } = JSON.parse((await import("node:fs")).readFileSync(0, "utf8"));
+  const calls = [];
+  const reply = { reading: "Palm up, laying it out", quote: "a decision", evidence: ["palm"], confidence: 0.1,
+                  focus: 0.1, tension: 0.9, intent: "Deflecting", intent_certainty: 0.9, valence: -0.9 };
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, body });
+    if (url.endsWith("/systemone")) {
+      if (mode === "blocked") throw new TypeError("Failed to fetch");
+      if (mode === "unsure") {
+        jevReply.answers.intent = { type: "choice", choice: "deflecting", confidence: 0.3,
+                                    probabilities: { deflecting: 0.3, stating: 0.28 } };
+      }
+      return Response.json(jevReply);
+    }
+    return Response.json({ choices: [{ message: { content: JSON.stringify(reply) } }] });
+  };
+  const notices = [];
+  const judge = new BrowserJudge({ provider: "deepseek", apiKey: "sk-1", lang: "en", context: "",
+    handLabel: (h) => handLabel(h, "en"), onNotice: (m) => notices.push(m), fetchImpl,
+    jev: { route: "openrouter", apiKey: "or-1", model: "" } });
+  if (mode === "nollm") judge.judgeImpl.llm = null;
+  const label = judge.label;
+  const first = await judge.judge(feats, { live: true });
+  console.log(JSON.stringify({ label, first, notices, calls }));
+"""
+
+
+def _browser_jev(mode):
+    from .test_jev import _window
+
+    out = subprocess.run([NODE, "--input-type=module", "-e", BROWSER_JEV], capture_output=True, text=True, cwd=WEB,
+                         check=True, timeout=30,
+                         input=json.dumps({"feats": _window(), "jevReply": JEV_REPLY, "mode": mode}))
+    return json.loads(out.stdout)
+
+
+@needs_node
+def test_browser_jev_decides_and_the_llm_writes():
+    out = _browser_jev("ok")
+    assert out["label"] == "Jev · DeepSeek"
+    jev_call, llm_call = out["calls"]
+    assert jev_call["url"] == "https://openrouter.ai/api/v1/systemone"
+    assert jev_call["body"]["model"] == "typesafe/jev-latest" and "Hands:" in jev_call["body"]["state"]
+    assert "Jev's decision for this window (settled)" in llm_call["body"]["messages"][-1]["content"]
+    first = out["first"]
+    assert first["source"] == "jev" and first["writer"] == "deepseek" and first["intent"] == "Explaining"
+    assert first["reading"] == "Palm up, laying it out" and first["confidence"] == 0.8 and first["tension"] == 0.15
+
+
+@needs_node
+def test_browser_jev_hands_unsure_windows_to_the_llm():
+    out = _browser_jev("unsure")
+    assert out["first"]["source"] == "deepseek" and out["first"]["intent"] == "Deflecting"
+    assert "Jev's decision" not in out["calls"][1]["body"]["messages"][-1]["content"]
+
+
+@needs_node
+def test_browser_jev_blocked_falls_back_to_the_llm_with_a_notice():
+    out = _browser_jev("blocked")
+    assert out["notices"] == ["Jev can't be reached from this page, using DeepSeek"]
+    assert out["first"]["source"] == "deepseek"
+
+
+@needs_node
+def test_browser_jev_alone_writes_with_templates():
+    out = _browser_jev("nollm")
+    assert out["first"]["source"] == "jev" and "writer" not in out["first"]
+    assert out["first"]["reading"] == "Right hand · open palm (palm up) — Explaining"

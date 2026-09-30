@@ -63,6 +63,26 @@ Other AI providers take their usual key variable and `--judge <provider>`:
 | `custom` | `OPENAI_COMPATIBLE_API_KEY` (optional) | pass `--base-url` and `--model` |
 | `heuristic` | none | rule-based scores, no AI |
 
+### Jev: fast decisions, less thinking
+
+[Jev](https://typesafe.ai) (TypeSafe AI, September 2026) is a "System One" decision model: instead of writing text it answers typed questions (a score on a scale, a choice between options) with calibrated probabilities, in well under a second. With Jev switched on:
+
+1. Each window's measurements are described in plain words (`facial/jev.py`, `describe()`), because Jev handles words better than numbers.
+2. Jev decides the Confident / Focused / Tense scores, the mood and the intent.
+3. The AI model only writes the one-line reading, the quote and the evidence, at low effort, so it thinks far less.
+4. When Jev is unsure of the intent (below 40%), that window goes back to the AI model to judge in full. Without an AI model, the words come from the rule templates.
+
+The overlay credits it the way the original breakdown videos do: `MediaPipe · Jev · Claude`.
+
+```bash
+export TYPESAFE_API_KEY=...          # or OPENROUTER_API_KEY, which reaches Jev through OpenRouter
+python -m facial clip.mp4 --srt clip.srt --jev                    # Jev decides, Claude writes
+python -m facial clip.mp4 --srt clip.srt --jev --judge heuristic  # Jev alone, rule templates write
+python -m facial serve --jev --judge deepseek
+```
+
+On the linked site, turn on **Jev** in Settings and paste an OpenRouter key (the same key can also serve as the AI model through OpenRouter). TypeSafe's own API reportedly refuses requests straight from web pages, so in the browser OpenRouter is the route to try first; the self-hosted server works with both.
+
 Pick another model with `--model`, and point any provider at a different endpoint (a proxy, a regional endpoint such as `https://dashscope.aliyuncs.com/compatible-mode/v1` or `https://api.moonshot.cn/v1`) with `--base-url`. The providers and their defaults live in `facial/providers.py`.
 
 - **Linux only:** MediaPipe needs EGL/GLES: `sudo apt install libegl1 libgles2`.
@@ -125,6 +145,7 @@ Server options:
 | `--judge` | `claude` | the AI provider (see the table under Setup), or `heuristic` for rule-based scores only |
 | `--model` | the provider's default | |
 | `--base-url` | the provider's | required for `--judge custom` |
+| `--jev` | off | Jev decides, the `--judge` model only writes (see Jev above); `--jev-via typesafe\|openrouter`, `--jev-model` |
 | `--live-effort` | `low` | reasoning effort for live windows (fast verdicts) |
 | `--effort` | `medium` | reasoning effort for video-file jobs |
 
@@ -196,6 +217,8 @@ facial/
   features.py    hand tracking, windowing, the five fields per window
   judge.py       judgment layer: Claude (Anthropic SDK), OpenAI-compatible providers, heuristic fallback
   providers.py   the AI providers: base URLs, default models, key variables
+  jev.py         Jev decision layer: window described in words, typed questions, /systemone client
+  net.py         small JSON-over-HTTP helpers
   render.py      Pillow HUD overlay and video writing
   media.py       ffmpeg helpers (clip, audio extraction, H.264 writer)
   models.py      MediaPipe model + web runtime download

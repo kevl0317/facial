@@ -11,6 +11,7 @@ from typing import Callable
 
 from .audio import analyze_audio
 from .features import add_hand_motion, assign_segments, build_windows, clip_baseline, window_features
+from .jev import jev_settings
 from .judge import judge_all
 from .media import cut_clip, extract_audio, probe
 from .perception import run_perception
@@ -54,6 +55,9 @@ class Options:
     model: str | None = None  # default: the provider's default model
     base_url: str | None = None
     effort: str = "medium"
+    jev: bool = False  # Jev decides each window; the judge above only writes the words
+    jev_via: str | None = None  # "typesafe" or "openrouter" (default: whichever key is set)
+    jev_model: str | None = None
     context: str = ""
     window: float = 5.0
     analysis_fps: float = 15.0
@@ -146,16 +150,18 @@ def run(opts: Options, report: Report | None = None) -> Result:
 
     # 5. Judgment layer ---------------------------------------------------------
     model = opts.model or PROVIDERS.get(opts.judge, {}).get("model")
+    jev = jev_settings(opts.jev, opts.jev_via, opts.jev_model)
     judge_key = {"feats": _digest(feats), "judge": opts.judge, "model": model, "effort": opts.effort,
-                 "lang": opts.lang, "context": opts.context, **({"base_url": opts.base_url} if opts.base_url else {})}
-    report("judge", 0.0, f"Judging {len(feats)} windows with {opts.judge}...")
+                 "lang": opts.lang, "context": opts.context, **({"base_url": opts.base_url} if opts.base_url else {}),
+                 **({"jev": jev} if jev else {})}
+    report("judge", 0.0, f"Judging {len(feats)} windows with {'Jev + ' if jev else ''}{opts.judge}...")
     clip_info = {"duration": info.duration, "baseline": baseline}
     judgments_path = workdir / "judgments.json"
     judgments = _cached(judgments_path, judge_key, opts.fresh, lambda: judge_all(
         feats, clip_info, opts.judge, opts.lang, model, opts.effort, opts.context,
         lambda h: hand_label(h, opts.lang), log=lambda m: report("judge", None, m),
-        progress=progress("judge"), base_url=opts.base_url), report)
-    if opts.judge != "heuristic" and any(j["source"] == "heuristic" for j in judgments):
+        progress=progress("judge"), base_url=opts.base_url, jev=jev), report)
+    if (opts.judge != "heuristic" or jev) and any(j["source"] == "heuristic" for j in judgments):
         judgments_path.unlink()  # don't cache fallbacks: the next run retries the AI judge
 
     analysis = output.with_name(f"{output.stem}_analysis.json")

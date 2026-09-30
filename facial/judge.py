@@ -14,12 +14,12 @@ import json
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 
 import anthropic
 
 from . import __version__
+from .jev import JEV_INTENTS, JevClient, decision_note
+from .net import JudgeUnavailable, _error_message, _post_json
 from .providers import OPENAI_REASONING, PROVIDERS, RULES, THINKING_MODELS, env_key, provider
 
 DEFAULT_MODEL = PROVIDERS["claude"]["model"]
@@ -79,6 +79,19 @@ LANGUAGE_RULES = {
 }
 
 
+# When Jev decides a window, the LLM only writes these.
+WRITE_SCHEMA = {
+    "type": "object",
+    "properties": {"reading": {"type": "string"}, "quote": {"type": "string"},
+                   "evidence": {"type": "array", "items": {"type": "string"}}},
+    "required": ["reading", "quote", "evidence"],
+    "additionalProperties": False,
+}
+
+WRITER_RULE = ("- Jev, a fast decision model, may have already decided a window's scores, intent and tone. The turn "
+               "then gives Jev's decision: take it as settled and reply with only reading, quote and evidence, "
+               "written to fit it. When a turn gives no decision, judge the window fully as above.\n")
+
 # Added to the system prompt for chat-completions providers, which can't all be held to the schema.
 JSON_RULE = ("- Reply with only the JSON object for the window: no prose, no code fences. "
              f"It must match this JSON Schema: {json.dumps(SCHEMA, separators=(',', ':'))}\n")
@@ -91,8 +104,8 @@ def _clamp(v, lo=0.0, hi=1.0) -> float:
         return round((lo + hi) / 2, 2)
 
 
-def normalise(j: dict, source: str) -> dict:
-    return {
+def normalise(j: dict, source: str, writer: str | None = None) -> dict:
+    out = {
         "reading": str(j.get("reading", "")).strip(),
         "quote": str(j.get("quote", "")).strip().strip('"“”'),
         "confidence": _clamp(j.get("confidence")),
@@ -104,10 +117,9 @@ def normalise(j: dict, source: str) -> dict:
         "evidence": [str(e) for e in j.get("evidence", [])][:4],
         "source": source,
     }
-
-
-class JudgeUnavailable(Exception):
-    """The judge can't be used for this clip (no key, key rejected, bad model...)."""
+    if writer:
+        out["writer"] = writer  # the LLM that put a Jev decision into words
+    return out
 
 
 class BaseJudge:
@@ -152,15 +164,16 @@ class BaseJudge:
         head = f"Window {feats['window']}{total}:\n"
         return (self._intro(feats) if first else "") + head + body
 
-    def _call(self, window: int) -> tuple[dict, dict] | None:
+    def _call(self, window: int, schema: dict) -> tuple[dict, dict] | None:
         """Send self.messages; return (parsed JSON, assistant message) or None for a transient failure."""
         raise NotImplementedError
 
-    def judge(self, feats: dict, clip: dict | None = None) -> dict | None:
+    def judge(self, feats: dict, clip: dict | None = None, decision: dict | None = None) -> dict | None:
         """Judge one window. Returns None when this window should fall back to heuristics.
 
-        Raises JudgeUnavailable when the judge can't be used at all (no credentials, a
-        rejected key or request), so the caller can switch to heuristics for the rest.
+        With a Jev `decision`, the scores and intent are settled and the model only writes
+        the reading, quote and evidence. Raises JudgeUnavailable when the judge can't be
+        used at all (no credentials, a rejected key or request).
         """
         if clip is not None:
             self.clip = clip
@@ -169,9 +182,10 @@ class BaseJudge:
             # Long sessions: start a fresh conversation (history stays append-only
             # within each one) and carry the recent arc forward as a summary.
             self.messages = []
-        self.messages.append({"role": "user", "content": self._prompt(feats, first=not self.messages)})
+        content = self._prompt(feats, first=not self.messages) + (decision_note(decision) if decision else "")
+        self.messages.append({"role": "user", "content": content})
         try:
-            out = self._call(feats["window"])
+            out = self._call(feats["window"], WRITE_SCHEMA if decision else SCHEMA)
         except BaseException:
             self.messages.pop()
             raise
@@ -180,6 +194,9 @@ class BaseJudge:
             return None
         data, assistant = out
         self.messages.append(assistant)
+        if decision:
+            data = {**data, **{k: decision[k] for k in ("confidence", "focus", "tension", "valence", "intent",
+                                                        "intent_certainty")}}
         result = normalise(data, self.id)
         self.history.append({"window": feats["window"], **result})
         return result
@@ -194,7 +211,7 @@ class ClaudeJudge(BaseJudge):
         super().__init__("claude", model, effort, lang, context, max_turns, log)
         self.client = anthropic.Anthropic(api_key=api_key or None, base_url=base_url or None, max_retries=4)
 
-    def _call(self, window: int) -> tuple[dict, dict] | None:
+    def _call(self, window: int, schema: dict) -> tuple[dict, dict] | None:
         extra = {}
         if self.model in FALLBACK_MODELS:
             extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
@@ -205,7 +222,7 @@ class ClaudeJudge(BaseJudge):
                 system=self.system,
                 messages=self.messages,
                 thinking={"type": "adaptive"},
-                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": SCHEMA}},
+                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
                 cache_control={"type": "ephemeral"},
                 **extra,
             )
@@ -256,30 +273,6 @@ def extract_json(text: str | None) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _post_json(url: str, headers: dict, body: dict, timeout: float) -> tuple[int, dict]:
-    """POST JSON; returns (status, parsed body). Raises OSError / HTTPException on network failures."""
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            status, raw = res.status, res.read()
-    except urllib.error.HTTPError as exc:
-        status, raw = exc.code, exc.read()
-    try:
-        data = json.loads(raw or b"{}")
-    except ValueError:
-        return (502 if status == 200 else status), {"error": {"message": raw.decode("utf-8", "replace")[:300]}}
-    return status, data if isinstance(data, dict) else {"error": {"message": str(data)[:300]}}
-
-
-def _error_message(data: dict) -> str:
-    err = data.get("error", data) if isinstance(data, dict) else data
-    if isinstance(err, list) and err:
-        err = err[0]
-    if isinstance(err, dict):
-        return str(err.get("message") or err.get("detail") or err)[:300]
-    return str(err)[:300]
-
-
 class ChatJudge(BaseJudge):
     """Any OpenAI-compatible chat-completions API (OpenAI, DeepSeek, Gemini, Grok, Ollama...)."""
 
@@ -297,7 +290,7 @@ class ChatJudge(BaseJudge):
         self.post = _post_json
         self.sleep = time.sleep
 
-    def _body(self) -> dict:
+    def _body(self, schema: dict) -> dict:
         body = {"model": self.model, "messages": [{"role": "system", "content": self.system}, *self.messages]}
         if self.plain:
             return body
@@ -308,12 +301,12 @@ class ChatJudge(BaseJudge):
             body["reasoning_effort"] = {"low": "low", "medium": "medium"}.get(self.effort, "high")
         if p["json"] == "schema":
             body["response_format"] = {"type": "json_schema",
-                                       "json_schema": {"name": "window_judgment", "strict": True, "schema": SCHEMA}}
+                                       "json_schema": {"name": "window_judgment", "strict": True, "schema": schema}}
         elif p["json"] == "object":
             body["response_format"] = {"type": "json_object"}
         return body
 
-    def _call(self, window: int) -> tuple[dict, dict] | None:
+    def _call(self, window: int, schema: dict) -> tuple[dict, dict] | None:
         if not self.base_url:
             raise JudgeUnavailable("No base URL for the custom provider: pass --base-url")
         if self.provider["key"] == "required" and not self.api_key:
@@ -327,7 +320,7 @@ class ChatJudge(BaseJudge):
         attempt = 0
         while True:
             try:
-                status, data = self.post(url, headers, self._body(), 180)
+                status, data = self.post(url, headers, self._body(schema), 180)
             except ValueError as exc:  # e.g. a base URL without https://
                 raise JudgeUnavailable(f"Bad {self.name} URL {url!r} ({exc})") from exc
             except (OSError, http.client.HTTPException) as exc:  # network error or timeout
@@ -366,10 +359,101 @@ class ChatJudge(BaseJudge):
         return parsed, {"role": "assistant", "content": text}
 
 
+class JevJudge:
+    """Jev decides each window; the LLM, if any, only puts it into words (at low effort).
+
+    When Jev is unsure of the intent, or can't answer, the LLM judges the whole window
+    instead; without an LLM the words come from the same templates the rules use.
+    """
+
+    id = "jev"
+
+    def __init__(self, jev: JevClient, llm: BaseJudge | None, lang: str = "en", hand_label=None, log=None):
+        self.jev = jev
+        self.llm = llm
+        self.lang = lang
+        self.hand_label = hand_label
+        self.log = log or _stderr
+        self.previous: dict | None = None
+        if llm is not None:
+            llm.system += WRITER_RULE
+            llm.effort = "low"  # the decision is made: the words don't need deep thought
+
+    @property
+    def name(self) -> str:
+        return "Jev" + (f" + {self.llm.name}" if self.llm else "")
+
+    @property
+    def usage(self) -> dict:
+        return self.llm.usage if self.llm else {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+    def _ask_llm(self, feats: dict, clip: dict | None, decision: dict | None = None) -> dict | None:
+        if self.llm is None:
+            return None
+        try:
+            return self.llm.judge(feats, clip, decision)
+        except JudgeUnavailable as exc:
+            self.log(f"{exc}; Jev carries on without {self.llm.name}.")
+            self.llm = None
+            return None
+
+    def _template(self, feats: dict, d: dict) -> dict:
+        """Words for a Jev decision when no LLM writes them."""
+        g = feats["gesture"]
+        dom, second = g.get("dominant"), g.get("second")
+        gesture = self.hand_label(dom) if (dom and self.hand_label) else ""
+        if gesture and second:
+            gesture += " + " + self.hand_label(second)
+        sep = "，" if self.lang == "zh" else " — "
+        w = d["words"]
+        return {"reading": f"{gesture}{sep}{d['intent']}" if gesture else d["intent"],
+                "quote": _quote(feats["subtitle"]) if feats["subtitle"] else "",
+                "evidence": [f"Jev: {JEV_INTENTS[d['intent_key']][0]} ({d['intent_certainty']:.2f})",
+                             f"Jev: {w['confidence']}, {w['focus']}, {w['tension']}, {w['valence']}"]}
+
+    def judge(self, feats: dict, clip: dict | None = None) -> dict | None:
+        if self.jev is None and self.llm is None:
+            raise JudgeUnavailable("Neither Jev nor an LLM is available")
+        decision = None
+        if self.jev is not None:
+            try:
+                decision = self.jev.decide(feats, self.lang, self.previous)
+            except JudgeUnavailable as exc:
+                self.jev = None
+                if self.llm is None:
+                    raise
+                self.log(f"{exc}; carrying on without Jev.")
+
+        if decision is None or not decision["certain"]:
+            if decision is not None and self.llm is not None:
+                self.log(f"  window {feats['window']}: Jev unsure ({decision['intent_certainty']:.2f}); "
+                         f"{self.llm.name} decides")
+            full = self._ask_llm(feats, clip)
+            if full is not None:
+                return full
+            if decision is None:
+                return None  # neither could judge this window: the caller uses the rules
+
+        self.previous = decision
+        scores = {k: decision[k] for k in ("confidence", "focus", "tension", "valence", "intent",
+                                           "intent_certainty")}
+        written = self._ask_llm(feats, clip, decision)
+        if written is not None:
+            return normalise({**written, **scores}, "jev", writer=written["source"])
+        return normalise({**self._template(feats, decision), **scores}, "jev")
+
+
 def make_judge(pid: str, model: str | None = None, effort: str = "medium", lang: str = "en", context: str = "",
                max_turns: int | None = None, log=None, api_key: str | None = None,
-               base_url: str | None = None) -> BaseJudge | None:
-    """The judge for a provider id, or None for the rule-based scoring."""
+               base_url: str | None = None, jev: dict | None = None, hand_label=None):
+    """The judge for a provider id, or None for the rule-based scoring.
+
+    jev: {"route", "model", "api_key", "base_url"} to let Jev make the decisions, with the
+    provider (or the rule templates, for pid "heuristic") only writing the words.
+    """
+    if jev is not None:
+        llm = make_judge(pid, model, effort, lang, context, max_turns, log, api_key, base_url)
+        return JevJudge(JevClient(log=log or _stderr, **jev), llm, lang, hand_label, log)
     if pid in (RULES, "rules", "none"):
         return None
     if provider(pid)["kind"] == "anthropic":
@@ -455,8 +539,8 @@ def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     }, "heuristic")
 
 
-def judge_or_fallback(judge: BaseJudge | None, feats: dict, clip: dict | None, lang: str, hand_label,
-                      log=None) -> tuple[dict, BaseJudge | None]:
+def judge_or_fallback(judge: BaseJudge | JevJudge | None, feats: dict, clip: dict | None, lang: str, hand_label,
+                      log=None) -> tuple[dict, BaseJudge | JevJudge | None]:
     """Judge one window with the AI judge when possible, else heuristics.
 
     Returns the judgment and the judge to keep using (None once the judge is unusable,
@@ -476,9 +560,11 @@ def judge_or_fallback(judge: BaseJudge | None, feats: dict, clip: dict | None, l
 
 
 def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: str | None, effort: str,
-              context: str, hand_label, log=None, progress=None, base_url: str | None = None) -> list[dict]:
+              context: str, hand_label, log=None, progress=None, base_url: str | None = None,
+              jev: dict | None = None) -> list[dict]:
     log = log or _stderr
-    judge = make_judge(method, model=model, effort=effort, lang=lang, context=context, log=log, base_url=base_url)
+    judge = make_judge(method, model=model, effort=effort, lang=lang, context=context, log=log, base_url=base_url,
+                       jev=jev, hand_label=hand_label)
 
     results = []
     for i, feats in enumerate(windows):
@@ -489,7 +575,9 @@ def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: st
             progress((i + 1) / len(windows))
 
     if judge is not None and judge.usage["input"]:
-        log(usage_line(judge.usage, judge.name))
+        log(usage_line(judge.usage, getattr(judge, "llm", judge).name))
+    if isinstance(judge, JevJudge) and judge.jev is not None and judge.jev.usage["input"]:
+        log(f"Jev usage: {judge.jev.usage['input']} input tokens")
     return results
 
 

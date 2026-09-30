@@ -94,3 +94,9 @@ def test_info_names_the_judge(tmp_path, monkeypatch):
     assert c.post("/api/live/sessions", json={}).json()["judge"] == "deepseek"
     rules = TestClient(create_app(token="", judge="heuristic", state_dir=tmp_path)).get("/api/info").json()
     assert (rules["tag"], rules["model"]) == ("Rules", "")
+
+
+def test_info_credits_jev(tmp_path):
+    app = create_app(token="", judge="deepseek", state_dir=tmp_path, jev={"route": "openrouter", "model": None})
+    info = TestClient(app).get("/api/info").json()
+    assert info["jev"] is True and info["label"] == "Jev · DeepSeek"

@@ -3,7 +3,10 @@
 
 import { PROVIDERS } from "./prompt.js";
 
-const tag = (source, rules) => PROVIDERS[source]?.name ?? rules;
+const tag = (source, rules) => (source === "jev" ? "Jev" : PROVIDERS[source]?.name ?? rules);
+
+/** Who decided and who wrote a judgment, e.g. "Jev · Claude" (judge_label in providers.py). */
+export const judgeLabel = (j, rules = "Rules") => (j.writer ? `${tag(j.source, rules)} · ${tag(j.writer, rules)}` : tag(j.source, rules));
 
 export const STRINGS = {
   en: {
@@ -357,8 +360,8 @@ export class Hud {
     return top;
   }
 
-  drawFooter(ctx, H, u, judge) {
-    const name = tag(judge, this.s.rules);
+  drawFooter(ctx, H, u, label) {
+    const name = label || this.s.rules;
     const cy = H - 18 * u;
     pill(ctx, 12 * u, cy, this.s.footer.replace("{judge}", name), u, { size: 10, weight: 600, fill: T.paper, line: 1.5, pad: 7 });
     return cy - 11 * u;

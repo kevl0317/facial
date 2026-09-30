@@ -2,23 +2,24 @@
 // GPT, DeepSeek, Gemini, ...) or the transparent rules. Ports facial/judge.py.
 
 import { Anthropic } from "./vendor/anthropic-sdk.mjs";
+import { JevClient, decisionNote } from "./jev.js";
 import {
-  DEFAULT_MODEL, FALLBACK_MODELS, JSON_RULE, LANGUAGE_RULES, OPENAI_REASONING, PROVIDERS, SCHEMA, SYSTEM_PROMPT,
-  THINKING_MODELS,
+  DEFAULT_MODEL, FALLBACK_MODELS, JEV_INTENTS, JSON_RULE, LANGUAGE_RULES, OPENAI_REASONING, PROVIDERS, SCHEMA,
+  SYSTEM_PROMPT, THINKING_MODELS, WRITE_SCHEMA, WRITER_RULE,
 } from "./prompt.js";
 
 export { PROVIDERS };
 
-/** Short label for a judgment's source ("Claude", "GPT", ... or the rules). */
-export const judgeTag = (source, rules = "Rules") => PROVIDERS[source]?.name ?? rules;
+/** Short label for a judgment's source ("Claude", "GPT", "Jev", ... or the rules). */
+export const judgeTag = (source, rules = "Rules") => (source === "jev" ? "Jev" : PROVIDERS[source]?.name ?? rules);
 
 const clamp = (v, lo = 0, hi = 1) => {
   const n = Number(v);
   return Math.round((Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : (lo + hi) / 2) * 100) / 100;
 };
 
-export function normalise(j, source) {
-  return {
+export function normalise(j, source, writer = null) {
+  const out = {
     reading: String(j.reading ?? "").trim(),
     quote: String(j.quote ?? "").trim().replace(/^["“”]+|["“”]+$/g, ""),
     confidence: clamp(j.confidence), focus: clamp(j.focus), tension: clamp(j.tension),
@@ -27,6 +28,8 @@ export function normalise(j, source) {
     evidence: (j.evidence || []).slice(0, 4).map(String),
     source,
   };
+  if (writer) out.writer = writer; // the LLM that put a Jev decision into words
+  return out;
 }
 
 const INTENTS = {
@@ -109,6 +112,8 @@ export function extractJson(text) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const SCORE_KEYS = ["confidence", "focus", "tension", "valence", "intent", "intent_certainty"];
+const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 
 /** One conversation per session, one window per turn (BaseJudge in judge.py). */
 class ConversationJudge {
@@ -141,24 +146,29 @@ class ConversationJudge {
     return `${text}\n`;
   }
 
-  /** Returns a judgment, or null for a transient failure; throws JudgeUnavailable when it can't be used. */
-  async judge(feats, clip = null) {
+  /**
+   * Returns a judgment, or null for a transient failure; throws JudgeUnavailable when it can't be used.
+   * With a Jev `decision`, the scores and intent are settled and the model only writes the words.
+   */
+  async judge(feats, clip = null, decision = null) {
     if (clip) this.clip = clip;
     const turns = this.messages.filter((m) => m.role === "assistant").length;
     if (this.maxTurns && turns >= this.maxTurns) this.messages = [];
     const head = `Window ${feats.window}${feats.of ? `/${feats.of}` : " (live)"}:\n`;
     const first = !this.messages.length;
-    this.messages.push({ role: "user", content: (first ? this.intro(feats) : "") + head + JSON.stringify(feats) });
+    const note = decision ? decisionNote(decision) : "";
+    this.messages.push({ role: "user", content: (first ? this.intro(feats) : "") + head + JSON.stringify(feats) + note });
     let out;
     try {
-      out = await this.call();
+      out = await this.call(decision ? WRITE_SCHEMA : SCHEMA);
     } catch (err) {
       this.messages.pop();
       throw err;
     }
     if (!out) { this.messages.pop(); return null; }
     this.messages.push(out.assistant); // append-only history
-    const result = normalise(out.data, this.id);
+    const data = decision ? { ...out.data, ...pick(decision, SCORE_KEYS) } : out.data;
+    const result = normalise(data, this.id);
     this.history.push({ window: feats.window, ...result });
     return result;
   }
@@ -171,14 +181,14 @@ export class ClaudeJudge extends ConversationJudge {
     this.client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 3 });
   }
 
-  async call() {
+  async call(schema) {
     const params = {
       model: this.model,
       max_tokens: 16000,
       system: this.system,
       messages: this.messages,
       thinking: { type: "adaptive" },
-      output_config: { effort: this.effort, format: { type: "json_schema", schema: SCHEMA } },
+      output_config: { effort: this.effort, format: { type: "json_schema", schema } },
       cache_control: { type: "ephemeral" },
     };
     if (FALLBACK_MODELS.includes(this.model)) {
@@ -216,7 +226,7 @@ export class ChatJudge extends ConversationJudge {
     this.retryMs = 1500;
   }
 
-  body() {
+  body(schema) {
     const body = { model: this.model, messages: [{ role: "system", content: this.system }, ...this.messages] };
     if (this.plain) return body;
     const p = this.provider;
@@ -226,12 +236,12 @@ export class ChatJudge extends ConversationJudge {
       body.reasoning_effort = { low: "low", medium: "medium" }[this.effort] || "high";
     }
     if (p.json === "schema") {
-      body.response_format = { type: "json_schema", json_schema: { name: "window_judgment", strict: true, schema: SCHEMA } };
+      body.response_format = { type: "json_schema", json_schema: { name: "window_judgment", strict: true, schema } };
     } else if (p.json === "object") body.response_format = { type: "json_object" };
     return body;
   }
 
-  async call() {
+  async call(schema) {
     if (!this.baseUrl) throw new JudgeUnavailable("No base URL", "setup");
     if (this.provider.key === "required" && !this.apiKey) throw new JudgeUnavailable("No API key", "key");
     const headers = { "Content-Type": "application/json" };
@@ -240,7 +250,7 @@ export class ChatJudge extends ConversationJudge {
       let res = null;
       let data = {};
       try {
-        res = await this.fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(this.body()) });
+        res = await this.fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(this.body(schema)) });
         data = await res.json().catch(() => ({}));
         this.reached = true;
       } catch (err) {
@@ -306,29 +316,119 @@ export async function listModels({ provider, apiKey, baseUrl, fetchImpl = (...a)
   return [...new Set(ids.filter((id) => id && !NOT_CHAT.test(id)))].sort();
 }
 
-/** Which judge a browser session uses: the chosen AI when it's set up (falls back per window), else rules. */
+/**
+ * Jev decides each window; the LLM, if any, only puts it into words at low effort (JevJudge in
+ * judge.py). When Jev is unsure of the intent, or can't answer, the LLM judges the whole window.
+ */
+class JevJudge {
+  constructor({ jev, llm, lang, handLabel, onNotice }) {
+    this.jev = jev;
+    this.llm = llm;
+    this.lang = lang;
+    this.handLabel = handLabel;
+    this.onNotice = onNotice;
+    this.previous = null;
+    if (llm) {
+      llm.system += WRITER_RULE;
+      llm.effort = "low"; // the decision is made: the words don't need deep thought
+    }
+  }
+
+  get id() { return "jev"; }
+
+  async askLlm(feats, clip, decision = null) {
+    if (!this.llm) return null;
+    try {
+      return await this.llm.judge(feats, clip, decision);
+    } catch (err) {
+      console.warn(err);
+      this.onNotice(notice(this.llm.name, err, this.jev ? "Jev" : "rules"));
+      this.llm = null;
+      return null;
+    }
+  }
+
+  template(feats, d) {
+    const g = feats.gesture;
+    let gesture = g.dominant && this.handLabel ? this.handLabel(g.dominant) : "";
+    if (gesture && g.second) gesture += ` + ${this.handLabel(g.second)}`;
+    const w = d.words;
+    return {
+      reading: gesture ? `${gesture}${this.lang === "zh" ? "，" : " — "}${d.intent}` : d.intent,
+      quote: feats.subtitle ? quoteOf(feats.subtitle) : "",
+      evidence: [`Jev: ${JEV_INTENTS[d.intent_key][0]} (${d.intent_certainty.toFixed(2)})`,
+        `Jev: ${w.confidence}, ${w.focus}, ${w.tension}, ${w.valence}`],
+    };
+  }
+
+  /** A judgment, or null when neither Jev nor the LLM could judge this window. */
+  async judge(feats, clip) {
+    let decision = null;
+    if (this.jev) {
+      try {
+        decision = await this.jev.decide(feats, this.lang, this.previous);
+      } catch (err) {
+        console.warn(err);
+        this.onNotice(notice("Jev", err, this.llm ? this.llm.name : "rules"));
+        this.jev = null;
+      }
+    }
+    if (!decision || !decision.certain) {
+      const full = await this.askLlm(feats, clip);
+      if (full) return full;
+      if (!decision) return null;
+    }
+    this.previous = decision;
+    const scores = pick(decision, SCORE_KEYS);
+    const written = await this.askLlm(feats, clip, decision);
+    if (written) return normalise({ ...written, ...scores }, "jev", written.source);
+    return normalise({ ...this.template(feats, decision), ...scores }, "jev");
+  }
+}
+
+/** What went wrong with `name`, and what takes over. */
+function notice(name, err, fallback = "rules") {
+  if (err.reason === "key") return `${name} key rejected, using ${fallback}`;
+  if (err.reason === "blocked") return `${name} can't be reached from this page, using ${fallback}`;
+  return `${name} unavailable (${String(err.message).slice(0, 80)}), using ${fallback}`;
+}
+
+/**
+ * Which judge a browser session uses: the chosen AI when it's set up, Jev first when it's on,
+ * falling back per window to the rules.
+ */
 export class BrowserJudge {
-  constructor({ provider = "claude", apiKey, model, baseUrl, lang, context, handLabel, onNotice, fetchImpl }) {
+  constructor({ provider = "claude", apiKey, model, baseUrl, lang, context, handLabel, onNotice, fetchImpl, jev = null }) {
     this.lang = lang;
     this.handLabel = handLabel;
     this.onNotice = onNotice || (() => {});
     this.llm = makeJudge({ provider, apiKey, model, baseUrl, lang, context, fetchImpl });
+    if (jev && jev.apiKey) {
+      this.judgeImpl = new JevJudge({
+        jev: new JevClient({ ...jev, fetchImpl }), llm: this.llm, lang, handLabel, onNotice: this.onNotice,
+      });
+    } else this.judgeImpl = this.llm;
   }
 
-  get name() { return this.llm ? this.llm.id : "heuristic"; }
+  get name() { return this.judgeImpl ? this.judgeImpl.id : "heuristic"; }
+
+  /** Who decides (and writes): "Jev · Claude", "GPT", "Rules"... */
+  get label() {
+    if (!this.judgeImpl) return judgeTag("heuristic");
+    if (this.judgeImpl instanceof JevJudge) return this.judgeImpl.llm ? `Jev · ${this.judgeImpl.llm.name}` : "Jev";
+    return this.judgeImpl.name;
+  }
 
   async judge(feats, clip) {
-    if (this.llm) {
+    if (this.judgeImpl) {
       try {
-        const res = await this.llm.judge(feats, clip);
+        const res = await this.judgeImpl.judge(feats, clip);
         if (res) return res;
+        if (this.judgeImpl instanceof JevJudge && !this.judgeImpl.jev && !this.judgeImpl.llm) this.judgeImpl = null;
       } catch (err) {
         console.warn(err);
-        const n = this.llm.name;
-        this.onNotice(err.reason === "key" ? `${n} key rejected, using rules`
-          : err.reason === "blocked" ? `${n} can't be reached from this page, using rules`
-            : `${n} unavailable (${String(err.message).slice(0, 80)}), using rules`);
-        this.llm = null;
+        this.onNotice(notice(this.judgeImpl.name || "AI", err));
+        this.judgeImpl = null;
       }
     }
     return heuristicJudgment(feats, this.lang, this.handLabel);

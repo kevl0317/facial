@@ -131,4 +131,12 @@ def env_key(pid: str) -> str:
 
 def judge_tag(source: str, rules: str = "Rules") -> str:
     """Short label for a judgment's source, as shown on the overlay."""
+    if source == "jev":
+        return "Jev"
     return PROVIDERS[source]["name"] if source in PROVIDERS else rules
+
+
+def judge_label(j: dict, rules: str = "Rules") -> str:
+    """Who decided and who wrote a judgment, e.g. "Jev · Claude" (the footer credit)."""
+    tag = judge_tag(j.get("source", ""), rules)
+    return f"{tag} · {judge_tag(j['writer'])}" if j.get("writer") else tag

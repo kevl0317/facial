@@ -2,6 +2,7 @@ import { CONFIG } from "./config.js";
 import { handSvg } from "./hand.js";
 import { Dropdown } from "./dropdown.js";
 import { playIntro } from "./intro.js";
+import { JEV_ROUTES } from "./jev.js";
 import { PROVIDERS, judgeReady, listModels } from "./judge.js";
 import { LiveEngine, loadTasks } from "./live.js";
 import { parseSubtitles } from "./srt.js";
@@ -105,6 +106,8 @@ const live = {
   windowSec: Number(store.get("facial-windowSec") || 5),
   context: store.get("facial-context") || "",
   provider: store.get("facial-provider") || "claude",
+  jev: store.get("facial-jev") === "1",
+  jevVia: store.get("facial-jevVia") || "openrouter",
 };
 const save = (k, v) => { live[k] = v; store.set(`facial-${k}`, typeof v === "boolean" ? (v ? "1" : "0") : String(v)); };
 
@@ -135,16 +138,29 @@ const ai = (p = live.provider) => ({
   baseUrl: store.get(`facial-base-${p}`) || "",
 });
 
+// Jev (fast decisions) goes through OpenRouter or TypeSafe; an OpenRouter key is shared with the model picker.
+if (!JEV_ROUTES[live.jevVia]) live.jevVia = "openrouter";
+const jevSettings = () => ({
+  jev: live.jev,
+  jevVia: live.jevVia,
+  jevKey: store.get(`facial-key-${live.jevVia}`) || "",
+  jevModel: store.get(`facial-jevmodel-${live.jevVia}`) || "",
+});
+
 function refreshJudgeChip() {
   const s = ai();
   const p = PROVIDERS[s.provider];
-  if (p && judgeReady(s)) showJudge(p.name, `${p.name} · ${s.model || p.model}`);
+  const llm = p && judgeReady(s);
+  const jev = live.jev && jevSettings().jevKey;
+  if (jev) showJudge(llm ? `Jev · ${p.name}` : "Jev", llm ? `Jev decides, ${p.name} writes` : "Jev decides; rule templates write");
+  else if (llm) showJudge(p.name, `${p.name} · ${s.model || p.model}`);
   else showJudge("Rules", p ? `Rule-based scoring; add a ${p.name} key in settings` : "Rule-based scoring");
 }
 
-// Themed lists for the provider picker and the model suggestions (set up below, static site only).
+// Themed lists for the provider picker, the model suggestions and the Jev route (static site only).
 let providerList = null;
 let modelList = null;
+let jevList = null;
 const providerLabel = (id) => {
   const p = PROVIDERS[id];
   if (!p) return { value: "heuristic", label: "Rules", hint: "no AI" };
@@ -201,8 +217,39 @@ function showProvider() {
   checkKey();
 }
 
+function showJev() {
+  const s = jevSettings();
+  const r = JEV_ROUTES[s.jevVia];
+  $("#jevBox").hidden = !live.jev;
+  $("#jevVia").innerHTML = `<span class="dd-name">${esc(r.name)}</span><span class="dd-hint">Jev</span>`;
+  jevList.value = s.jevVia;
+  $("#jevKey").value = s.jevKey;
+  $("#jevKey").placeholder = `${r.name} API key`;
+  $("#jevKeyLink").href = r.key_url;
+  $("#jevModel").value = s.jevModel;
+  $("#jevModel").placeholder = r.model;
+  refreshJudgeChip();
+}
+
 if (STATIC) {
   $("#aiBox").hidden = false;
+  $("#jevToggle").hidden = false;
+  jevList = new Dropdown($("#jevVia"), {
+    label: "How to reach Jev",
+    onPick: (via) => { save("jevVia", via); showJev(); $("#jevVia").focus(); },
+  });
+  jevList.setItems([
+    { value: "openrouter", label: "OpenRouter", hint: "one key for Jev + models" },
+    { value: "typesafe", label: "TypeSafe", hint: "Jev's own API" },
+  ]);
+  $("#jevVia").addEventListener("click", () => jevList.toggle());
+  $("#jevVia").addEventListener("keydown", (e) => jevList.key(e));
+  $("#jevKey").addEventListener("change", () => {
+    store.set(`facial-key-${live.jevVia}`, $("#jevKey").value.trim() || null);
+    if (live.provider === live.jevVia) showProvider(); // the same OpenRouter key
+    refreshJudgeChip();
+  });
+  $("#jevModel").addEventListener("change", () => store.set(`facial-jevmodel-${live.jevVia}`, $("#jevModel").value.trim() || null));
   providerList = new Dropdown($("#provider"), {
     label: "AI model provider",
     onPick: (id) => { save("provider", id); showProvider(); $("#provider").focus(); },
@@ -225,6 +272,7 @@ if (STATIC) {
   $("#modelBtn").addEventListener("click", () => modelList.toggle());
   const keep = (sel, name) => $(sel).addEventListener("change", () => {
     store.set(`facial-${name}-${live.provider}`, $(sel).value.trim() || null);
+    if (name === "key" && live.provider === live.jevVia) showJev(); // the same OpenRouter key
     refreshJudgeChip();
     if (name !== "model") checkKey();
   });
@@ -241,12 +289,14 @@ if (STATIC) {
   keep("#modelName", "model");
   keep("#baseUrl", "base");
   showProvider();
+  showJev();
   $("#whisperBox").closest("label").hidden = true;
   showPhoneQr(location.href.split("#")[0]);
 } else {
   api("api/info").then((info) => {
-    const rules = info.judge === "heuristic";
-    showJudge(rules ? "Rules" : info.tag, rules ? "Rule-based scoring" : `${info.tag} · ${info.model}`);
+    const rules = info.judge === "heuristic" && !info.jev;
+    const label = info.label || info.tag;
+    showJudge(rules ? "Rules" : label, rules ? "Rule-based scoring" : info.jev ? `${label} · Jev decides` : `${label} · ${info.model}`);
     $("#whisperBox").disabled = !info.whisper;
     if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) showPhoneQr(info.phone_url);
   }).catch((err) => toast(err.message));
@@ -261,6 +311,7 @@ for (const t of document.querySelectorAll(".toggle")) {
     const on = t.getAttribute("aria-pressed") !== "true";
     t.setAttribute("aria-pressed", String(on));
     save(k, on);
+    if (k === "jev") showJev();
   });
 }
 $("#windowSec").value = live.windowSec;
@@ -300,7 +351,7 @@ async function startLive() {
     onWindow: ({ window: win, judgment }) => $("#windowLog").prepend(windowItem(win, judgment)),
   });
   try {
-    await engine.start({ ...live, ...ai(), audioCtx });
+    await engine.start({ ...live, ...ai(), ...jevSettings(), audioCtx });
     document.body.classList.add("running");
     $("#settings").classList.remove("open");
     $("#settingsBtn").setAttribute("aria-expanded", "false");
@@ -413,7 +464,7 @@ async function analyzeInBrowser(form, audioCtx) {
     await fileEngine.start({
       file, segments, lang: fileLang, context: String(data.get("context") || "").trim(),
       windowSec: Number(data.get("window") || 5), skeleton: data.get("skeleton") === "true",
-      ...ai(), audioCtx, speech: false,
+      ...ai(), ...jevSettings(), audioCtx, speech: false,
     });
     trackPlayback();
   } catch (err) {

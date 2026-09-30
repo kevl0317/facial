@@ -34,6 +34,7 @@
       <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
       <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
       <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.5 2.5 5 13.5h6l-1 8 8.5-11h-6z"/></symbol>
       <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
       <symbol id="i-link" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
       <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></symbol>
@@ -87,6 +88,9 @@
               <svg class="ic"><use href="#i-cc"/></svg><span>Subtitles</span></button>
             <button type="button" class="toggle" data-setting="skeleton" aria-pressed="false">
               <svg class="ic"><use href="#i-hand"/></svg><span>Skeleton</span></button>
+            <button type="button" class="toggle" data-setting="jev" aria-pressed="false" id="jevToggle" hidden
+              title="Jev decides each verdict fast; the AI model only writes the words">
+              <svg class="ic"><use href="#i-bolt"/></svg><span>Jev</span></button>
           </div>
           <label class="slider"><span>Window</span>
             <input id="windowSec" type="range" min="3" max="12" step="1" value="5">
@@ -112,6 +116,21 @@
             </div>
             <input id="baseUrl" class="field" type="url" autocomplete="off" spellcheck="false"
               placeholder="https://…/v1" aria-label="API base URL" hidden>
+            <div class="jev-box" id="jevBox" hidden>
+              <div class="key-row">
+                <svg class="ic"><use href="#i-bolt"/></svg>
+                <button type="button" id="jevVia" class="field pick" aria-haspopup="listbox" aria-label="How to reach Jev"></button>
+              </div>
+              <label class="key-row">
+                <svg class="ic"><use href="#i-key"/></svg>
+                <input id="jevKey" class="field" type="password" autocomplete="off" spellcheck="false"
+                  placeholder="API key" aria-label="Jev API key, stored only in this browser">
+                <a class="key-link" id="jevKeyLink" target="_blank" rel="noopener" title="Get a key" aria-label="Get a key">
+                  <svg class="ic"><use href="#i-link"/></svg></a>
+              </label>
+              <input id="jevModel" class="field" autocomplete="off" spellcheck="false" placeholder="jev-latest"
+                aria-label="Jev model">
+            </div>
           </div>
         </div>
 
