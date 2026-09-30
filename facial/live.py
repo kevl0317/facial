@@ -17,7 +17,7 @@ import numpy as np
 
 from .audio import analyze_samples
 from .features import add_hand_motion, clip_baseline, window_features
-from .judge import DEFAULT_MODEL, ClaudeJudge, judge_or_fallback
+from .judge import judge_or_fallback, make_judge
 from .render import hand_label
 from .transcript import Segment
 
@@ -43,7 +43,7 @@ def _clean_sample(s: dict) -> dict | None:
 
 class LiveSession:
     def __init__(self, lang: str = "en", context: str = "", judge: str = "claude",
-                 model: str = DEFAULT_MODEL, effort: str = "low", log=None):
+                 model: str | None = None, effort: str = "low", log=None, base_url: str | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.lang = lang
         self.log = log
@@ -53,8 +53,8 @@ class LiveSession:
         self.audio_start: float | None = None  # session time of self.audio[0]
         self.windows: list[dict] = []
         self.judgments: list[dict] = []
-        self.judge = ClaudeJudge(model=model, effort=effort, lang=lang, context=context, max_turns=24,
-                                 log=log) if judge == "claude" else None
+        self.judge = make_judge(judge, model=model, effort=effort, lang=lang, context=context, max_turns=24,
+                                log=log, base_url=base_url)
         self.last_seen = time.time()
 
     def _add_audio(self, audio_b64: str, sr: int, t0: float) -> None:

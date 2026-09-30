@@ -34,6 +34,7 @@
       <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
       <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
       <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
       <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></symbol>
     </defs>
   </svg>
@@ -48,7 +49,7 @@
       <button role="tab" id="tabbtn-file" data-tab="file" aria-selected="false" aria-controls="tab-file">
         <svg class="ic"><use href="#i-film"/></svg><span>Video</span></button>
     </nav>
-    <span class="judge-chip" id="judgeChip" hidden><svg class="ic"><use href="#i-sparkle"/></svg><span></span></span>
+    <button type="button" class="judge-chip" id="judgeChip" hidden><svg class="ic"><use href="#i-sparkle"/></svg><span></span></button>
   </header>
 
   <main>
@@ -90,11 +91,24 @@
             <input id="windowSec" type="range" min="3" max="12" step="1" value="5">
             <output id="windowOut">5s</output></label>
           <input id="context" class="field" type="text" maxlength="300" placeholder="Context (optional)" aria-label="Context">
-          <label class="key-row" id="keyRow" hidden>
-            <svg class="ic"><use href="#i-key"/></svg>
-            <input id="apiKey" class="field" type="password" autocomplete="off" spellcheck="false"
-              placeholder="Claude API key (optional)" aria-label="Claude API key, stored only in this browser">
-          </label>
+          <div class="ai-box" id="aiBox" hidden>
+            <label class="key-row">
+              <svg class="ic"><use href="#i-sparkle"/></svg>
+              <select id="provider" class="field pick" aria-label="AI model provider"></select>
+            </label>
+            <label class="key-row" id="keyRow">
+              <svg class="ic"><use href="#i-key"/></svg>
+              <input id="apiKey" class="field" type="password" autocomplete="off" spellcheck="false"
+                placeholder="API key" aria-label="API key, stored only in this browser">
+              <a class="key-link" id="keyLink" target="_blank" rel="noopener" title="Get a key" aria-label="Get a key">
+                <svg class="ic"><use href="#i-link"/></svg></a>
+            </label>
+            <input id="modelName" class="field" list="modelList" autocomplete="off" spellcheck="false"
+              placeholder="Model" aria-label="Model">
+            <datalist id="modelList"></datalist>
+            <input id="baseUrl" class="field" type="url" autocomplete="off" spellcheck="false"
+              placeholder="https://…/v1" aria-label="API base URL" hidden>
+          </div>
         </div>
 
         <p class="toast" id="liveStatus" role="status" aria-live="polite"></p>

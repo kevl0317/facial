@@ -162,3 +162,52 @@ def test_subtitles_ask_for_a_tap_when_the_browser_refuses_a_restart():
 def test_subtitles_explain_a_microphone_clash():
     res = _speech("busy")
     assert res["texts"] == [] and len(res["events"]) == 1 and "Voice" in res["events"][0]
+
+
+BROWSER_JUDGE = """
+  import { BrowserJudge, listModels } from "./judge.js";
+  const reply = { reading: "Palm up", quote: "", confidence: 0.7, focus: 0.6, tension: 0.2, intent: "Explaining",
+                  intent_certainty: 0.6, valence: 0.3, evidence: ["palm"] };
+  const feats = (i) => ({ window: i, of: null, start: 0, end: 5, scene: {}, speaker: { state: "target" },
+                          subtitle: "", voice: {}, gesture: {} });
+  const calls = [];
+  const fakeFetch = (mode) => async (url, init) => {
+    calls.push({ url, headers: init?.headers || {}, body: init?.body ? JSON.parse(init.body) : null });
+    if (mode === "cors") throw new TypeError("Failed to fetch");
+    if (mode === "badkey") return new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 });
+    if (url.endsWith("/models")) {
+      return Response.json({ data: [{ id: "deepseek-chat" }, { id: "text-embedding-3" }, { id: "deepseek-reasoner" }] });
+    }
+    return Response.json({ choices: [{ message: { content: "```json\\n" + JSON.stringify(reply) + "\\n```" } }] });
+  };
+  const out = {};
+  for (const mode of ["ok", "cors", "badkey"]) {
+    const notices = [];
+    const j = new BrowserJudge({ provider: "deepseek", apiKey: "sk-1", lang: "en", context: "", fetchImpl: fakeFetch(mode),
+                                 onNotice: (m) => notices.push(m) });
+    const name = j.name;
+    const sources = [(await j.judge(feats(1), { live: true })).source, (await j.judge(feats(2))).source];
+    out[mode] = { name, sources, notices, after: j.name };
+  }
+  out.calls = calls.slice(0, 2);
+  out.noKey = new BrowserJudge({ provider: "openai", apiKey: "", lang: "en" }).name;
+  out.models = await listModels({ provider: "deepseek", apiKey: "sk-1", fetchImpl: fakeFetch("ok") });
+  console.log(JSON.stringify(out));
+"""
+
+
+@needs_node
+def test_browser_judge_talks_to_other_providers_and_falls_back_to_rules():
+    out = _node(BROWSER_JUDGE, None)
+    assert out["ok"] == {"name": "deepseek", "sources": ["deepseek", "deepseek"], "notices": [], "after": "deepseek"}
+    first, second = out["calls"]
+    assert first["url"] == "https://api.deepseek.com/chat/completions"
+    assert first["headers"]["Authorization"] == "Bearer sk-1"
+    assert first["body"]["response_format"] == {"type": "json_object"}
+    assert [m["role"] for m in second["body"]["messages"]] == ["system", "user", "assistant", "user"]
+    # A provider that refuses browsers (CORS) or a wrong key: say so once, then use the rules.
+    assert out["cors"]["sources"] == ["heuristic", "heuristic"] and out["cors"]["after"] == "heuristic"
+    assert out["cors"]["notices"] == ["DeepSeek can't be reached from this page, using rules"]
+    assert out["badkey"]["notices"] == ["DeepSeek key rejected, using rules"]
+    assert out["noKey"] == "heuristic"
+    assert out["models"] == ["deepseek-chat", "deepseek-reasoner"]

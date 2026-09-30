@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__
-from .judge import DEFAULT_MODEL
+from .providers import RULES, judge_tag, provider
 from .live import SessionStore
 from .models import DEFAULT_MODEL_DIR, ensure_models, ensure_web_vendor
 from .pipeline import STAGES, Options, run
@@ -114,9 +114,10 @@ class WindowIn(BaseModel):
     transcript: list[dict] = []
 
 
-def create_app(token: str | None = None, judge: str = "claude", model: str = DEFAULT_MODEL,
+def create_app(token: str | None = None, judge: str = "claude", model: str | None = None,
                effort: str = "medium", live_effort: str = "low", phone_url: str = "",
-               state_dir: Path = STATE_DIR) -> FastAPI:
+               state_dir: Path = STATE_DIR, base_url: str | None = None) -> FastAPI:
+    model = model or (provider(judge)["model"] if judge != RULES else "")
     app = FastAPI(title="facial", version=__version__, docs_url=None, redoc_url=None)
     sessions = SessionStore()
     jobs = JobRunner(state_dir / "jobs")
@@ -146,8 +147,8 @@ def create_app(token: str | None = None, judge: str = "claude", model: str = DEF
             whisper = True
         except ImportError:
             whisper = False
-        return {"version": __version__, "judge": judge, "model": model, "phone_url": phone_url,
-                "whisper": whisper}
+        return {"version": __version__, "judge": judge, "tag": judge_tag(judge), "model": model,
+                "phone_url": phone_url, "whisper": whisper}
 
     @app.get("/api/qr.svg", dependencies=auth)
     def qr(data: str):
@@ -164,7 +165,7 @@ def create_app(token: str | None = None, judge: str = "claude", model: str = DEF
     def new_session(body: SessionIn):
         lang = body.lang if body.lang in ("en", "zh") else "en"
         s = sessions.create(lang=lang, context=body.context[:500], judge=judge, model=model, effort=live_effort,
-                            log=lambda m: print(m, file=sys.stderr))
+                            base_url=base_url, log=lambda m: print(m, file=sys.stderr))
         return {"id": s.id, "judge": judge}
 
     @app.post("/api/live/sessions/{sid}/windows", dependencies=auth)
@@ -203,7 +204,8 @@ def create_app(token: str | None = None, judge: str = "claude", model: str = DEF
                 shutil.copyfileobj(srt.file, fh)
         opts = Options(video=src, output=workdir / "annotated.mp4", srt=srt_path, whisper=whisper or None,
                        start=max(0.0, start), end=end if end and end > start else None,
-                       lang=lang if lang in ("en", "zh") else "en", judge=judge, model=model, effort=effort,
+                       lang=lang if lang in ("en", "zh") else "en", judge=judge, model=model, base_url=base_url,
+                       effort=effort,
                        context=context[:500], window=min(20.0, max(2.0, window)), skeleton=skeleton,
                        workdir=workdir / "work")
         job = Job(id=job_id, workdir=workdir, options=opts)
@@ -316,8 +318,8 @@ def _print_qr(url: str) -> None:
 
 
 def serve(host: str = "0.0.0.0", port: int | None = None, https: bool = True, token: str | None = None,
-          judge: str = "claude", model: str = DEFAULT_MODEL, effort: str = "medium",
-          live_effort: str = "low") -> None:
+          judge: str = "claude", model: str | None = None, effort: str = "medium",
+          live_effort: str = "low", base_url: str | None = None) -> None:
     import uvicorn
 
     ensure_models()
@@ -335,10 +337,12 @@ def serve(host: str = "0.0.0.0", port: int | None = None, https: bool = True, to
         cert, key = ensure_cert(STATE_DIR / "certs", ["localhost", "127.0.0.1", *ips])
         ssl = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
+    model = model or (provider(judge)["model"] if judge != RULES else "")
     app = create_app(token=token, judge=judge, model=model, effort=effort, live_effort=live_effort,
-                     phone_url=phone_url)
+                     phone_url=phone_url, base_url=base_url)
     threading.Thread(target=_warm_up, daemon=True).start()
-    print(f"\n  facial {__version__}  ·  judge: {judge} ({model})\n", file=sys.stderr)
+    print(f"\n  facial {__version__}  ·  judge: {judge_tag(judge)}{f' ({model})' if model else ''}\n",
+          file=sys.stderr)
     print(f"  On this computer:  {local_url}", file=sys.stderr)
     if phone_url:
         print(f"  On your phone:     {phone_url}   (same Wi-Fi)\n", file=sys.stderr)

@@ -12,17 +12,24 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .judge import DEFAULT_MODEL
+from .providers import PROVIDERS, RULES
 from .pipeline import Options, run
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+JUDGES = (*PROVIDERS, RULES)
+JUDGE_HELP = ("who judges each window: an AI provider (" + ", ".join(PROVIDERS) + ") or heuristic "
+              "(rules, no key). Default: claude. Keys come from the environment, e.g. ANTHROPIC_API_KEY, "
+              "OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY; without one it falls back to heuristic")
+MODEL_HELP = "model name (default per provider: " + ", ".join(
+    f"{k} {v['model']}" for k, v in PROVIDERS.items() if v["model"]) + ")"
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m facial",
         description="Annotate a speaker's gestures, face and voice with MediaPipe, "
-                    "then let Claude read intent and demeanor window by window. "
+                    "then let an AI model (Claude, GPT, DeepSeek, Gemini...) read intent and demeanor "
+                    "window by window. "
                     "Run `python -m facial serve` for the web GUI with live camera mode.",
     )
     p.add_argument("video", type=Path, help="input video file")
@@ -33,10 +40,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--start", type=float, default=0.0, help="clip start, seconds")
     p.add_argument("--end", type=float, help="clip end, seconds")
     p.add_argument("--lang", choices=("en", "zh"), default="en", help="overlay and commentary language")
-    p.add_argument("--judge", choices=("claude", "heuristic"), default="claude",
-                   help="judgment layer (default: claude; falls back to heuristic without credentials)")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Claude model (default: {DEFAULT_MODEL})")
-    p.add_argument("--effort", choices=EFFORTS, default="medium", help="Claude effort level (default: medium)")
+    p.add_argument("--judge", choices=JUDGES, default="claude", metavar="PROVIDER", help=JUDGE_HELP)
+    p.add_argument("--model", help=MODEL_HELP)
+    p.add_argument("--base-url", help="API base URL (needed for --judge custom; overrides the provider's)")
+    p.add_argument("--effort", choices=EFFORTS, default="medium", help="reasoning effort (default: medium)")
     p.add_argument("--context", default="", help='who/what the clip is, e.g. "CEO keynote Q&A about export rules"')
     p.add_argument("--window", type=float, default=5.0, help="target window length in seconds (default 5)")
     p.add_argument("--analysis-fps", type=float, default=15.0, help="frames/s to run MediaPipe on (default 15)")
@@ -60,8 +67,9 @@ def parse_serve_args(argv) -> argparse.Namespace:
     p.add_argument("--no-https", action="store_true",
                    help="plain HTTP (phones then only get camera access through an HTTPS tunnel)")
     p.add_argument("--token", help="access key required by the API (default: random per run); '' disables it")
-    p.add_argument("--judge", choices=("claude", "heuristic"), default="claude")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Claude model (default: {DEFAULT_MODEL})")
+    p.add_argument("--judge", choices=JUDGES, default="claude", metavar="PROVIDER", help=JUDGE_HELP)
+    p.add_argument("--model", help=MODEL_HELP)
+    p.add_argument("--base-url", help="API base URL (needed for --judge custom; overrides the provider's)")
     p.add_argument("--effort", choices=EFFORTS, default="medium", help="effort for video-file jobs")
     p.add_argument("--live-effort", choices=EFFORTS, default="low",
                    help="effort for live windows (default: low, for fast verdicts)")
@@ -84,7 +92,7 @@ def main(argv=None) -> int:
 
         a = parse_serve_args(argv[1:])
         serve(host=a.host, port=a.port, https=not a.no_https, token=a.token, judge=a.judge, model=a.model,
-              effort=a.effort, live_effort=a.live_effort)
+              base_url=a.base_url, effort=a.effort, live_effort=a.live_effort)
         return 0
 
     args = parse_args(argv)

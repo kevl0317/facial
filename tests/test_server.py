@@ -83,3 +83,14 @@ def test_video_job(client, tmp_path):
     assert part.status_code == 206 and len(part.content) == 100  # seeking works in Safari/iOS
     analysis = client.get(job["analysis"]).json()
     assert len(analysis["windows"]) >= 1
+
+
+def test_info_names_the_judge(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    app = create_app(token="", judge="deepseek", state_dir=tmp_path)
+    c = TestClient(app)
+    info = c.get("/api/info").json()
+    assert (info["judge"], info["tag"], info["model"]) == ("deepseek", "DeepSeek", "deepseek-chat")
+    assert c.post("/api/live/sessions", json={}).json()["judge"] == "deepseek"
+    rules = TestClient(create_app(token="", judge="heuristic", state_dir=tmp_path)).get("/api/info").json()
+    assert (rules["tag"], rules["model"]) == ("Rules", "")

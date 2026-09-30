@@ -11,9 +11,10 @@ from typing import Callable
 
 from .audio import analyze_audio
 from .features import add_hand_motion, assign_segments, build_windows, clip_baseline, window_features
-from .judge import DEFAULT_MODEL, judge_all
+from .judge import judge_all
 from .media import cut_clip, extract_audio, probe
 from .perception import run_perception
+from .providers import PROVIDERS
 from .render import Overlay, hand_label, render_snapshot, render_video
 from .transcript import load_subtitles, shift, to_srt, transcribe
 
@@ -49,8 +50,9 @@ class Options:
     start: float = 0.0
     end: float | None = None
     lang: str = "en"
-    judge: str = "claude"
-    model: str = DEFAULT_MODEL
+    judge: str = "claude"  # a provider id from providers.py, or "heuristic"
+    model: str | None = None  # default: the provider's default model
+    base_url: str | None = None
     effort: str = "medium"
     context: str = ""
     window: float = 5.0
@@ -143,17 +145,18 @@ def run(opts: Options, report: Report | None = None) -> Result:
              for i, span in enumerate(spans)]
 
     # 5. Judgment layer ---------------------------------------------------------
-    judge_key = {"feats": _digest(feats), "judge": opts.judge, "model": opts.model, "effort": opts.effort,
-                 "lang": opts.lang, "context": opts.context}
+    model = opts.model or PROVIDERS.get(opts.judge, {}).get("model")
+    judge_key = {"feats": _digest(feats), "judge": opts.judge, "model": model, "effort": opts.effort,
+                 "lang": opts.lang, "context": opts.context, **({"base_url": opts.base_url} if opts.base_url else {})}
     report("judge", 0.0, f"Judging {len(feats)} windows with {opts.judge}...")
     clip_info = {"duration": info.duration, "baseline": baseline}
     judgments_path = workdir / "judgments.json"
     judgments = _cached(judgments_path, judge_key, opts.fresh, lambda: judge_all(
-        feats, clip_info, opts.judge, opts.lang, opts.model, opts.effort, opts.context,
+        feats, clip_info, opts.judge, opts.lang, model, opts.effort, opts.context,
         lambda h: hand_label(h, opts.lang), log=lambda m: report("judge", None, m),
-        progress=progress("judge")), report)
-    if opts.judge == "claude" and any(j["source"] != "claude" for j in judgments):
-        judgments_path.unlink()  # don't cache fallbacks: the next run retries Claude
+        progress=progress("judge"), base_url=opts.base_url), report)
+    if opts.judge != "heuristic" and any(j["source"] == "heuristic" for j in judgments):
+        judgments_path.unlink()  # don't cache fallbacks: the next run retries the AI judge
 
     analysis = output.with_name(f"{output.stem}_analysis.json")
     analysis.write_text(json.dumps(

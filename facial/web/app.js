@@ -1,6 +1,7 @@
 import { CONFIG } from "./config.js";
 import { handSvg } from "./hand.js";
 import { playIntro } from "./intro.js";
+import { PROVIDERS, judgeReady, listModels } from "./judge.js";
 import { LiveEngine, loadTasks } from "./live.js";
 import { parseSubtitles } from "./srt.js";
 import qrcode from "./vendor/qrcode.mjs";
@@ -102,7 +103,7 @@ const live = {
   skeleton: store.get("facial-skeleton") === "1",
   windowSec: Number(store.get("facial-windowSec") || 5),
   context: store.get("facial-context") || "",
-  apiKey: store.get("facial-apikey") || "",
+  provider: store.get("facial-provider") || "claude",
 };
 const save = (k, v) => { live[k] = v; store.set(`facial-${k}`, typeof v === "boolean" ? (v ? "1" : "0") : String(v)); };
 
@@ -120,22 +121,100 @@ function showPhoneQr(url) {
   $("#phoneCard").hidden = false;
 }
 
+// The AI judge on the static site: provider, key, model (and base URL) per provider, kept in this browser.
+if (store.get("facial-apikey") && !store.get("facial-key-claude")) {
+  store.set("facial-key-claude", store.get("facial-apikey"));
+  store.set("facial-apikey", null);
+}
+if (live.provider !== "heuristic" && !PROVIDERS[live.provider]) live.provider = "claude";
+const ai = (p = live.provider) => ({
+  provider: p,
+  apiKey: store.get(`facial-key-${p}`) || "",
+  model: store.get(`facial-model-${p}`) || "",
+  baseUrl: store.get(`facial-base-${p}`) || "",
+});
+
+function refreshJudgeChip() {
+  const s = ai();
+  const p = PROVIDERS[s.provider];
+  if (p && judgeReady(s)) showJudge(p.name, `${p.name} · ${s.model || p.model}`);
+  else showJudge("Rules", p ? `Rule-based scoring; add a ${p.name} key in settings` : "Rule-based scoring");
+}
+
+let modelCheck = 0;
+async function checkKey() {
+  const s = ai();
+  const p = PROVIDERS[s.provider];
+  const field = $("#apiKey");
+  field.classList.remove("ok", "bad");
+  const list = $("#modelList");
+  list.innerHTML = "";
+  if (!p) return;
+  const fill = (ids) => { list.innerHTML = ids.map((id) => `<option value="${esc(id)}"></option>`).join(""); };
+  fill(p.models);
+  if (!judgeReady(s)) return;
+  const n = ++modelCheck;
+  try {
+    const ids = await listModels(s);
+    if (n !== modelCheck) return;
+    if (p.key !== "none") field.classList.add("ok");
+    if (ids.length) fill(ids);
+  } catch (err) {
+    if (n === modelCheck && [401, 403].includes(err.status)) field.classList.add("bad");
+  }
+}
+
+function showProvider() {
+  const s = ai();
+  const p = PROVIDERS[s.provider];
+  $("#provider").value = s.provider;
+  $("#keyRow").hidden = !p || p.key === "none";
+  $("#modelName").hidden = !p;
+  $("#baseUrl").hidden = !p || !p.edit_base;
+  if (p) {
+    $("#apiKey").value = s.apiKey;
+    $("#apiKey").placeholder = p.key === "optional" ? "API key (optional)" : `${p.maker} API key`;
+    $("#keyLink").hidden = !p.key_url;
+    if (p.key_url) $("#keyLink").href = p.key_url;
+    $("#modelName").value = s.model;
+    $("#modelName").placeholder = p.model || "Model";
+    $("#baseUrl").value = s.baseUrl;
+    $("#baseUrl").placeholder = p.base_url || "https://…/v1";
+  }
+  refreshJudgeChip();
+  checkKey();
+}
+
 if (STATIC) {
-  const refresh = () => showJudge(live.apiKey ? "Claude" : "Rules", live.apiKey ? "Claude judges each window" : "Rule-based scoring; add a Claude key in settings");
-  refresh();
-  $("#keyRow").hidden = false;
-  $("#apiKey").value = live.apiKey;
-  $("#apiKey").addEventListener("change", () => {
-    const v = $("#apiKey").value.trim();
-    live.apiKey = v;
-    store.set("facial-apikey", v || null);
-    refresh();
+  $("#aiBox").hidden = false;
+  const label = (p) => (p.name === p.maker ? p.name : `${p.name} · ${p.maker}`);
+  $("#provider").innerHTML = Object.entries(PROVIDERS).map(([id, p]) => `<option value="${id}">${esc(label(p))}</option>`).join("")
+    + '<option value="heuristic">Rules · no AI</option>';
+  $("#provider").addEventListener("change", () => { save("provider", $("#provider").value); showProvider(); });
+  const keep = (sel, name) => $(sel).addEventListener("change", () => {
+    store.set(`facial-${name}-${live.provider}`, $(sel).value.trim() || null);
+    refreshJudgeChip();
+    if (name !== "model") checkKey();
   });
+  // The chip opens the AI settings (they live in the Live tab's settings).
+  document.body.classList.add("static");
+  $("#judgeChip").addEventListener("click", () => {
+    if (fileEngine && fileEngine.running) return;
+    if ($("#tab-live").hidden) $("#tabbtn-live").click();
+    $("#settings").classList.add("open");
+    $("#settingsBtn").setAttribute("aria-expanded", "true");
+    $("#provider").focus();
+  });
+  keep("#apiKey", "key");
+  keep("#modelName", "model");
+  keep("#baseUrl", "base");
+  showProvider();
   $("#whisperBox").closest("label").hidden = true;
   showPhoneQr(location.href.split("#")[0]);
 } else {
   api("api/info").then((info) => {
-    showJudge(info.judge === "claude" ? "Claude" : "Rules", info.judge === "claude" ? info.model : "Rule-based scoring (no Claude)");
+    const rules = info.judge === "heuristic";
+    showJudge(rules ? "Rules" : info.tag, rules ? "Rule-based scoring" : `${info.tag} · ${info.model}`);
     $("#whisperBox").disabled = !info.whisper;
     if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) showPhoneQr(info.phone_url);
   }).catch((err) => toast(err.message));
@@ -189,7 +268,7 @@ async function startLive() {
     onWindow: ({ window: win, judgment }) => $("#windowLog").prepend(windowItem(win, judgment)),
   });
   try {
-    await engine.start({ ...live, audioCtx });
+    await engine.start({ ...live, ...ai(), audioCtx });
     document.body.classList.add("running");
     $("#settings").classList.remove("open");
     $("#settingsBtn").setAttribute("aria-expanded", "false");
@@ -302,7 +381,7 @@ async function analyzeInBrowser(form, audioCtx) {
     await fileEngine.start({
       file, segments, lang: fileLang, context: String(data.get("context") || "").trim(),
       windowSec: Number(data.get("window") || 5), skeleton: data.get("skeleton") === "true",
-      apiKey: live.apiKey, audioCtx, speech: false,
+      ...ai(), audioCtx, speech: false,
     });
     trackPlayback();
   } catch (err) {

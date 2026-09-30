@@ -1,19 +1,28 @@
 """The judgment layer: fuse the five fields of each window into a reading.
 
-`ClaudeJudge` runs one conversation per clip, one window per turn, so the
-emotion arc stays coherent and every turn reuses the cached history.
+A judge runs one conversation per clip, one window per turn, so the emotion arc
+stays coherent. `ClaudeJudge` talks to Claude through the Anthropic SDK (with
+prompt caching); `ChatJudge` talks to any OpenAI-compatible chat API (OpenAI,
+DeepSeek, Gemini, Grok, Mistral, Qwen, Kimi, GLM, Groq, OpenRouter, Ollama...).
 `heuristic_judgment` is a rule-based fallback for running without an API key.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 
 import anthropic
 
-DEFAULT_MODEL = "claude-opus-5-5"
+from . import __version__
+from .providers import OPENAI_REASONING, PROVIDERS, RULES, THINKING_MODELS, env_key, provider
+
+DEFAULT_MODEL = PROVIDERS["claude"]["model"]
 # Models that accept server-side refusal fallbacks (`fallbacks: "default"`).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 
@@ -70,6 +79,11 @@ LANGUAGE_RULES = {
 }
 
 
+# Added to the system prompt for chat-completions providers, which can't all be held to the schema.
+JSON_RULE = ("- Reply with only the JSON object for the window: no prose, no code fences. "
+             f"It must match this JSON Schema: {json.dumps(SCHEMA, separators=(',', ':'))}\n")
+
+
 def _clamp(v, lo=0.0, hi=1.0) -> float:
     try:
         return round(max(lo, min(hi, float(v))), 2)
@@ -92,11 +106,19 @@ def normalise(j: dict, source: str) -> dict:
     }
 
 
-class ClaudeJudge:
-    def __init__(self, model: str = DEFAULT_MODEL, effort: str = "medium", lang: str = "en",
+class JudgeUnavailable(Exception):
+    """The judge can't be used for this clip (no key, key rejected, bad model...)."""
+
+
+class BaseJudge:
+    """One conversation per clip or live session; subclasses make the API call."""
+
+    def __init__(self, pid: str, model: str | None = None, effort: str = "medium", lang: str = "en",
                  context: str = "", max_turns: int | None = None, log=None):
-        self.client = anthropic.Anthropic(max_retries=4)
-        self.model = model
+        self.provider = provider(pid)
+        self.id = pid
+        self.name = self.provider["name"]
+        self.model = model or self.provider["model"]
         self.effort = effort
         self.context = context
         self.max_turns = max_turns
@@ -130,20 +152,49 @@ class ClaudeJudge:
         head = f"Window {feats['window']}{total}:\n"
         return (self._intro(feats) if first else "") + head + body
 
+    def _call(self, window: int) -> tuple[dict, dict] | None:
+        """Send self.messages; return (parsed JSON, assistant message) or None for a transient failure."""
+        raise NotImplementedError
+
     def judge(self, feats: dict, clip: dict | None = None) -> dict | None:
         """Judge one window. Returns None when this window should fall back to heuristics.
 
-        Raises anthropic.AuthenticationError / PermissionDeniedError / BadRequestError and
-        TypeError (no credentials) so the caller can stop using Claude for the rest of the clip.
+        Raises JudgeUnavailable when the judge can't be used at all (no credentials, a
+        rejected key or request), so the caller can switch to heuristics for the rest.
         """
         if clip is not None:
             self.clip = clip
         turns = sum(1 for m in self.messages if m["role"] == "assistant")
         if self.max_turns and turns >= self.max_turns:
-            # Long live sessions: start a fresh conversation (history stays append-only
+            # Long sessions: start a fresh conversation (history stays append-only
             # within each one) and carry the recent arc forward as a summary.
             self.messages = []
         self.messages.append({"role": "user", "content": self._prompt(feats, first=not self.messages)})
+        try:
+            out = self._call(feats["window"])
+        except BaseException:
+            self.messages.pop()
+            raise
+        if out is None:
+            self.messages.pop()
+            return None
+        data, assistant = out
+        self.messages.append(assistant)
+        result = normalise(data, self.id)
+        self.history.append({"window": feats["window"], **result})
+        return result
+
+
+class ClaudeJudge(BaseJudge):
+    """Claude via the Anthropic SDK: structured outputs, adaptive thinking, prompt caching."""
+
+    def __init__(self, model: str = DEFAULT_MODEL, effort: str = "medium", lang: str = "en",
+                 context: str = "", max_turns: int | None = None, log=None, api_key: str | None = None,
+                 base_url: str | None = None):
+        super().__init__("claude", model, effort, lang, context, max_turns, log)
+        self.client = anthropic.Anthropic(api_key=api_key or None, base_url=base_url or None, max_retries=4)
+
+    def _call(self, window: int) -> tuple[dict, dict] | None:
         extra = {}
         if self.model in FALLBACK_MODELS:
             extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
@@ -158,13 +209,17 @@ class ClaudeJudge:
                 cache_control={"type": "ephemeral"},
                 **extra,
             )
-        except Exception as exc:
-            self.messages.pop()
-            transient = isinstance(exc, (anthropic.RateLimitError, anthropic.APIConnectionError)) or (
-                isinstance(exc, anthropic.APIStatusError) and exc.status_code >= 500)
-            if not transient:
-                raise
-            self.log(f"  window {feats['window']}: Claude unavailable ({exc.__class__.__name__}); "
+        except TypeError as exc:
+            raise JudgeUnavailable(f"No Anthropic credentials found ({exc}). Set ANTHROPIC_API_KEY to use "
+                                   "Claude") from exc
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.BadRequestError,
+                anthropic.NotFoundError) as exc:
+            raise JudgeUnavailable(f"Claude request rejected ({exc.__class__.__name__}: {exc})") from exc
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
+            if isinstance(exc, anthropic.APIStatusError) and exc.status_code < 500 and \
+                    not isinstance(exc, anthropic.RateLimitError):
+                raise JudgeUnavailable(f"Claude request rejected ({exc.__class__.__name__}: {exc})") from exc
+            self.log(f"  window {window}: Claude unavailable ({exc.__class__.__name__}); "
                      "using heuristics for this window")
             return None
 
@@ -175,21 +230,153 @@ class ClaudeJudge:
         self.usage["cache_write"] += u.cache_creation_input_tokens or 0
 
         if response.stop_reason != "end_turn":
-            self.log(f"  window {feats['window']}: Claude stopped with {response.stop_reason}; "
+            self.log(f"  window {window}: Claude stopped with {response.stop_reason}; "
                      "using heuristics for this window")
-            self.messages.pop()
             return None
         text = next((b.text for b in reversed(response.content) if b.type == "text"), "")
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            self.messages.pop()
+        data = extract_json(text)
+        if data is None:
             return None
-        # Append the full content (thinking blocks included) so history stays append-only.
-        self.messages.append({"role": "assistant", "content": response.content})
-        result = normalise(data, "claude")
-        self.history.append({"window": feats["window"], **result})
-        return result
+        # Keep the full content (thinking blocks included) so history stays append-only.
+        return data, {"role": "assistant", "content": response.content}
+
+
+def extract_json(text: str | None) -> dict | None:
+    """The JSON object in a model's reply, tolerating code fences, <think> blocks and chatter."""
+    if not text:
+        return None
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    a, b = text.find("{"), text.rfind("}")
+    if a < 0 or b <= a:
+        return None
+    try:
+        data = json.loads(text[a:b + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _post_json(url: str, headers: dict, body: dict, timeout: float) -> tuple[int, dict]:
+    """POST JSON; returns (status, parsed body). Raises OSError / HTTPException on network failures."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            status, raw = res.status, res.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        return (502 if status == 200 else status), {"error": {"message": raw.decode("utf-8", "replace")[:300]}}
+    return status, data if isinstance(data, dict) else {"error": {"message": str(data)[:300]}}
+
+
+def _error_message(data: dict) -> str:
+    err = data.get("error", data) if isinstance(data, dict) else data
+    if isinstance(err, list) and err:
+        err = err[0]
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("detail") or err)[:300]
+    return str(err)[:300]
+
+
+class ChatJudge(BaseJudge):
+    """Any OpenAI-compatible chat-completions API (OpenAI, DeepSeek, Gemini, Grok, Ollama...)."""
+
+    RETRIES = 3
+
+    def __init__(self, pid: str, model: str | None = None, effort: str = "medium", lang: str = "en",
+                 context: str = "", max_turns: int | None = None, log=None, api_key: str | None = None,
+                 base_url: str | None = None):
+        # Without prompt caching the whole history is re-sent each turn: keep conversations short.
+        super().__init__(pid, model, effort, lang, context, min(max_turns or 12, 12), log)
+        self.system += JSON_RULE
+        self.base_url = (base_url or self.provider["base_url"]).rstrip("/")
+        self.api_key = api_key or env_key(pid)
+        self.plain = False  # the provider rejected our optional parameters: send a bare request
+        self.post = _post_json
+        self.sleep = time.sleep
+
+    def _body(self) -> dict:
+        body = {"model": self.model, "messages": [{"role": "system", "content": self.system}, *self.messages]}
+        if self.plain:
+            return body
+        p = self.provider
+        thinking = re.search(THINKING_MODELS, self.model, re.I) is not None
+        body["max_completion_tokens" if self.id == "openai" else "max_tokens"] = 16000 if thinking else 4000
+        if self.id == "openai" and re.search(OPENAI_REASONING, self.model):
+            body["reasoning_effort"] = {"low": "low", "medium": "medium"}.get(self.effort, "high")
+        if p["json"] == "schema":
+            body["response_format"] = {"type": "json_schema",
+                                       "json_schema": {"name": "window_judgment", "strict": True, "schema": SCHEMA}}
+        elif p["json"] == "object":
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    def _call(self, window: int) -> tuple[dict, dict] | None:
+        if not self.base_url:
+            raise JudgeUnavailable("No base URL for the custom provider: pass --base-url")
+        if self.provider["key"] == "required" and not self.api_key:
+            env = " or ".join(self.provider["env"])
+            raise JudgeUnavailable(f"No {self.provider['maker']} API key found. Set {env} to use {self.name}")
+        headers = {"Content-Type": "application/json", "User-Agent": f"facial/{__version__}"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        url = self.base_url + "/chat/completions"
+
+        attempt = 0
+        while True:
+            try:
+                status, data = self.post(url, headers, self._body(), 180)
+            except ValueError as exc:  # e.g. a base URL without https://
+                raise JudgeUnavailable(f"Bad {self.name} URL {url!r} ({exc})") from exc
+            except (OSError, http.client.HTTPException) as exc:  # network error or timeout
+                status, data = 0, {"error": {"message": str(exc) or exc.__class__.__name__}}
+            if status == 200:
+                break
+            if status == 400 and not self.plain:
+                # Some providers or models reject JSON mode, reasoning effort or the token cap.
+                self.log(f"  {self.name} rejected optional parameters ({_error_message(data)}); retrying without")
+                self.plain = True
+                continue
+            if status and status not in (408, 409, 429) and status < 500:
+                raise JudgeUnavailable(f"{self.name} request rejected ({status}: {_error_message(data)})")
+            attempt += 1
+            if attempt > self.RETRIES:
+                self.log(f"  window {window}: {self.name} unavailable ({status or _error_message(data)}); "
+                         "using heuristics for this window")
+                return None
+            self.sleep(min(20.0, 1.5 * 2 ** attempt))
+
+        u = data.get("usage") or {}
+        cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or u.get("prompt_cache_hit_tokens") or 0
+        self.usage["input"] += (u.get("prompt_tokens") or 0) - cached
+        self.usage["cache_read"] += cached
+        self.usage["output"] += u.get("completion_tokens") or 0
+
+        choice = (data.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content")
+        if isinstance(text, list):  # content parts
+            text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+        parsed = extract_json(text)
+        if parsed is None:
+            self.log(f"  window {window}: {self.name} gave no usable JSON "
+                     f"(finish_reason {choice.get('finish_reason')}); using heuristics for this window")
+            return None
+        return parsed, {"role": "assistant", "content": text}
+
+
+def make_judge(pid: str, model: str | None = None, effort: str = "medium", lang: str = "en", context: str = "",
+               max_turns: int | None = None, log=None, api_key: str | None = None,
+               base_url: str | None = None) -> BaseJudge | None:
+    """The judge for a provider id, or None for the rule-based scoring."""
+    if pid in (RULES, "rules", "none"):
+        return None
+    if provider(pid)["kind"] == "anthropic":
+        return ClaudeJudge(model=model or DEFAULT_MODEL, effort=effort, lang=lang, context=context,
+                           max_turns=max_turns, log=log, api_key=api_key, base_url=base_url)
+    return ChatJudge(pid, model=model, effort=effort, lang=lang, context=context, max_turns=max_turns, log=log,
+                     api_key=api_key, base_url=base_url)
 
 
 # --------------------------------------------------------------------------- heuristics
@@ -217,7 +404,7 @@ def _quote(text: str) -> str:
 
 
 def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
-    """Transparent rule-based scores; used without an API key or when a Claude call fails."""
+    """Transparent rule-based scores; used without an API key or when an AI judge call fails."""
     voice, g, spk = f["voice"], f["gesture"], f["speaker"]
     face, head = g.get("face", {}), g.get("head", {})
     rel = face.get("vs_baseline", {})
@@ -268,11 +455,11 @@ def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     }, "heuristic")
 
 
-def judge_or_fallback(judge: ClaudeJudge | None, feats: dict, clip: dict | None, lang: str, hand_label,
-                      log=None) -> tuple[dict, ClaudeJudge | None]:
-    """Judge one window with Claude when possible, else heuristics.
+def judge_or_fallback(judge: BaseJudge | None, feats: dict, clip: dict | None, lang: str, hand_label,
+                      log=None) -> tuple[dict, BaseJudge | None]:
+    """Judge one window with the AI judge when possible, else heuristics.
 
-    Returns the judgment and the judge to keep using (None once Claude is unusable,
+    Returns the judgment and the judge to keep using (None once the judge is unusable,
     e.g. missing credentials or a rejected request).
     """
     log = log or _stderr
@@ -280,24 +467,18 @@ def judge_or_fallback(judge: ClaudeJudge | None, feats: dict, clip: dict | None,
     if judge is not None:
         try:
             result = judge.judge(feats, clip)
-        except TypeError as exc:
-            log(f"No Anthropic credentials found ({exc}). Set ANTHROPIC_API_KEY to use Claude; "
-                "falling back to heuristic scoring.")
-            judge = None
-        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError,
-                anthropic.BadRequestError, anthropic.NotFoundError) as exc:
-            log(f"Claude request rejected ({exc.__class__.__name__}: {exc}); falling back to heuristic scoring.")
+        except JudgeUnavailable as exc:
+            log(f"{exc}; falling back to heuristic scoring.")
             judge = None
     if result is None:
         result = heuristic_judgment(feats, lang, hand_label)
     return result, judge
 
 
-def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: str, effort: str,
-              context: str, hand_label, log=None, progress=None) -> list[dict]:
+def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: str | None, effort: str,
+              context: str, hand_label, log=None, progress=None, base_url: str | None = None) -> list[dict]:
     log = log or _stderr
-    judge = ClaudeJudge(model=model, effort=effort, lang=lang, context=context, log=log) \
-        if method == "claude" else None
+    judge = make_judge(method, model=model, effort=effort, lang=lang, context=context, log=log, base_url=base_url)
 
     results = []
     for i, feats in enumerate(windows):
@@ -308,12 +489,12 @@ def judge_all(windows: list[dict], clip: dict, method: str, lang: str, model: st
             progress((i + 1) / len(windows))
 
     if judge is not None and judge.usage["input"]:
-        log(usage_line(judge.usage))
+        log(usage_line(judge.usage, judge.name))
     return results
 
 
-def usage_line(u: dict) -> str:
-    return (f"Claude usage: {u['input']} input + {u['cache_read']} cache-read + {u['cache_write']} "
+def usage_line(u: dict, name: str = "Claude") -> str:
+    return (f"{name} usage: {u['input']} input + {u['cache_read']} cache-read + {u['cache_write']} "
             f"cache-write input tokens, {u['output']} output tokens")
 
 

@@ -1,6 +1,10 @@
 // Cartoon HUD for live mode: white "stickers" with ink outlines and hard shadows.
 // facial/render.py draws the same design onto rendered videos.
 
+import { PROVIDERS } from "./prompt.js";
+
+const tag = (source, rules) => PROVIDERS[source]?.name ?? rules;
+
 export const STRINGS = {
   en: {
     left: "Left hand", right: "Right hand", verdict: "Verdict", confidence: "Confident", focus: "Focused",
@@ -231,7 +235,7 @@ export class Hud {
     ctx.fillStyle = T.ink;
     ctx.fillText(s.verdict, x0 + 14 * u, y0 + 22 * u);
     const titleW = ctx.measureText(s.verdict).width;
-    pill(ctx, x0 + 22 * u + titleW, y0 + 22 * u, j.source === "claude" ? "Claude" : s.rules, u, { size: 11, fill: T.yellow });
+    pill(ctx, x0 + 22 * u + titleW, y0 + 22 * u, tag(j.source, s.rules), u, { size: 11, fill: T.yellow });
 
     const bars = [["confidence", T.blue], ["focus", T.mint], ["tension", T.coral]];
     ctx.font = font(600, 13 * u);
@@ -354,7 +358,7 @@ export class Hud {
   }
 
   drawFooter(ctx, H, u, judge) {
-    const name = judge === "claude" ? "Claude" : this.s.rules;
+    const name = tag(judge, this.s.rules);
     const cy = H - 18 * u;
     pill(ctx, 12 * u, cy, this.s.footer.replace("{judge}", name), u, { size: 10, weight: 600, fill: T.paper, line: 1.5, pad: 7 });
     return cy - 11 * u;
