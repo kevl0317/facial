@@ -138,7 +138,7 @@ button.judge-chip { cursor: default; }
   color: var(--paper); font-size: 22px; font-weight: 600;
 }
 .stage-empty p { margin: 0; }
-body.running .stage-empty { display: none; }
+body.running .stage-empty, body.has-frame .stage-empty { display: none; }
 
 .dock {
   display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto;

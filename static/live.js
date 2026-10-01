@@ -510,6 +510,11 @@ export class LiveEngine {
   }
 
   async stop() {
+    // Live: leave a clean last frame on screen (no "Thinking…") to look at after stopping.
+    if (!this.isFile && this.running && this.hud) {
+      this.stopped = true;
+      try { this.render(this.now()); } catch { /* nothing drawn yet */ }
+    }
     this.running = false;
     clearInterval(this.audioWatch);
     cancelAnimationFrame(this.raf);
@@ -563,7 +568,7 @@ export class LiveEngine {
       this.tracker.update(sample, v.videoWidth / v.videoHeight);
       this.recent.push(sample);
       if (sample.face) this.trackFaceBaseline(sample);
-      while (this.recent.length && this.recent[0].t < t - 1.0) this.recent.shift();
+      while (this.recent.length && this.recent[0].t < t - 1.6) this.recent.shift();
       if (t - this.lastSampleT >= 1 / SAMPLE_FPS - 0.005) {
         this.lastSampleT = t;
         this.windowSamples.push({ ...sample, hands: sample.hands.map(({ pts, ...h }) => h) });
@@ -591,9 +596,9 @@ export class LiveEngine {
     if (this.faceCount % 30 === 1) this.faceBase = clipBaseline(this.faceFrames);
   }
 
-  /** The face expression over the last ~0.8 s: its name, share and a pointer target. */
+  /** The face expression over the last 1.5 s: its name and share. */
   liveFace(t) {
-    const faces = this.recent.filter((s) => s.t >= t - 0.8 && s.face).map((s) => s.face);
+    const faces = this.recent.filter((s) => s.t >= t - 1.5 && s.face).map((s) => s.face);
     if (!faces.length || !faces[faces.length - 1].bbox) return null;
     const mean = {};
     for (const f of faces) for (const [k, p] of Object.entries(expressionScores(f, this.faceBase || {}))) mean[k] = (mean[k] || 0) + p / faces.length;
@@ -675,7 +680,8 @@ export class LiveEngine {
       skeleton = { hands: latest.hands.map((h) => h.pts.map(toPx)), face: faceBox };
     }
     let status;
-    if (this.inFlight) status = { kind: "judging", text: `${this.s.judging}…` };
+    if (this.stopped) status = { kind: "stopped", text: this.s.stopped };
+    else if (this.inFlight) status = { kind: "judging", text: `${this.s.judging}…` };
     else if (!this.hud.judgments.length) {
       status = { kind: "collecting", text: `${this.s.collecting} ${Math.max(0, this.opts.windowSec - (t - this.windowStart)).toFixed(0)}s` };
     } else status = { kind: "live", text: this.isFile ? this.s.playing : `${this.s.live} · ${this.fps} fps` };
