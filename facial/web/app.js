@@ -384,6 +384,7 @@ async function stopLive() {
   await engine.stop();
   engine.opts.audioCtx?.close().catch(() => {});
   document.body.classList.remove("running");
+  document.body.classList.add("has-frame"); // the last frame stays up: don't draw the start screen over it
   $("#startBtn").setAttribute("aria-label", "Start");
   $(".rec-label").textContent = "Start";
   toast("");

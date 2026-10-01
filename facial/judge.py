@@ -62,7 +62,7 @@ Upstream, computer vision (Google MediaPipe) and audio analysis have measured ea
 Fuse the fields into one reading of the window:
 - reading: one vivid line of at most ~90 characters that ties the body language to what is being said, e.g. "Left hand spreads open as if laying out facts; the claim about culture comes out calm and firm." Lead with the gesture when there is one.
 - quote: the most telling short phrase from the subtitle, copied verbatim; an empty string if there is no subtitle.
-- emotion: the emotion the speaker is showing, read from the face, the voice and the words together. One of:
+- emotion: the emotion the speaker is showing. Start from face.expression (what the face alone shows, also shown live on screen); name a different emotion only when the voice or the words clearly show it, and say why in evidence. One of:
 """ + "".join(f"  - {k}: {v[2]}\n" for k, v in EMOTIONS.items()) + """\
 - emotion_intensity: 0-1, how strongly that emotion shows.
 - traits: a 0-1 score for each of these eight traits. 0.5 is this speaker's usual self; move away from it only as far as the evidence supports:

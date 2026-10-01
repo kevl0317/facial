@@ -72,7 +72,7 @@ export function describe(f, previous = null) {
     const expr = face.expression || {};
     if ((expr.top || "neutral") !== "neutral" && (expr.share || 0) >= 0.25) {
       parts.push(`looks ${EXPRESSIONS[expr.top][0].toLowerCase()}${expr.share >= 0.5 ? " most of the time" : " at times"}`);
-    }
+    } else if (face.expression) parts.push("neutral expression");
     if ((rel.smile || 0) >= 0.15) parts.push("smiling more than usual");
     else if ((rel.smile || 0) <= -0.15) parts.push("smiling less than usual");
     if ((rel.frown || 0) >= 0.08) parts.push("frowning");

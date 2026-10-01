@@ -149,6 +149,8 @@ def describe(f: dict, previous: dict | None = None) -> str:
         if expr.get("top", "neutral") != "neutral" and expr.get("share", 0) >= 0.25:
             parts.append(f"looks {EXPRESSIONS[expr['top']][0].lower()}"
                          + (" most of the time" if expr["share"] >= 0.5 else " at times"))
+        elif expr:
+            parts.append("neutral expression")
         if rel.get("smile", 0) >= 0.15:
             parts.append("smiling more than usual")
         elif rel.get("smile", 0) <= -0.15:

@@ -10,12 +10,12 @@ export const judgeLabel = (j, rules = "Rules") => (j.writer ? `${tag(j.source, r
 
 export const STRINGS = {
   en: {
-    left: "Left hand", right: "Right hand", face: "Face", verdict: "Verdict",
+    left: "Left hand", right: "Right hand", face: "Face now", verdict: "Verdict", stopped: "STOPPED",
     intent: "Intent", arc: "Mood", vision: "VISION", rules: "Rules",
     footer: "MediaPipe · {judge} · demo only", collecting: "Warming up", judging: "Thinking", live: "LIVE", playing: "PLAYING",
   },
   zh: {
-    left: "左手", right: "右手", face: "表情", verdict: "综合判定",
+    left: "左手", right: "右手", face: "当前表情", verdict: "综合判定", stopped: "已停止",
     intent: "意图", arc: "情绪弧", vision: "VISION", rules: "规则",
     footer: "MediaPipe · {judge} · 仅供演示", collecting: "准备中", judging: "判定中", live: "直播", playing: "播放中",
   },
@@ -225,7 +225,7 @@ export class Hud {
     const w = ctx.measureText(st.text).width + 16 * u + dot;
     const h = 22 * u;
     const x0 = W - 14 * u - w;
-    sticker(ctx, x0, cy - h / 2, w, h, h / 2, u, { fill: live ? T.white : T.yellow, shadow: 0, line: 2 });
+    sticker(ctx, x0, cy - h / 2, w, h, h / 2, u, { fill: live || st.kind === "stopped" ? T.white : T.yellow, shadow: 0, line: 2 });
     ctx.fillStyle = T.ink;
     ctx.fillText(st.text, x0 + 8 * u + dot, cy + 0.5 * u);
     if (live) {

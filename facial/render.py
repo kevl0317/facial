@@ -24,12 +24,12 @@ from .providers import judge_label, judge_tag
 
 STRINGS = {
     "en": {
-        "left": "Left hand", "right": "Right hand", "face": "Face", "verdict": "Verdict",
+        "left": "Left hand", "right": "Right hand", "face": "Face now", "verdict": "Verdict",
         "intent": "Intent", "arc": "Mood", "vision": "VISION",
         "rules": "Rules", "footer": "MediaPipe · {judge} · demo only",
     },
     "zh": {
-        "left": "左手", "right": "右手", "face": "表情", "verdict": "综合判定",
+        "left": "左手", "right": "右手", "face": "当前表情", "verdict": "综合判定",
         "intent": "意图", "arc": "情绪弧", "vision": "VISION",
         "rules": "规则", "footer": "MediaPipe · {judge} · 仅供演示",
     },
@@ -245,8 +245,8 @@ class Overlay:
         return sorted(out, key=lambda h: h["anchor"][0] if h["anchor"] else 2.0)
 
     def _live_face(self, t: float) -> dict | None:
-        """The face expression over the last 0.8 s (same as live.js liveFace)."""
-        i0 = bisect.bisect_left(self.sample_t, t - 0.8)
+        """The face expression over the last 1.5 s (same as live.js liveFace)."""
+        i0 = bisect.bisect_left(self.sample_t, t - 1.5)
         i1 = bisect.bisect_right(self.sample_t, t)
         faces = [s["face"] for s in self.samples[i0:i1] if s["face"]]
         if not faces or "bbox" not in faces[-1]:
