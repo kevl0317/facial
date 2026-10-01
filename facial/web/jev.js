@@ -3,7 +3,7 @@
 // plain-words description of the measurements; the LLM only writes the words.
 
 import { handLabel } from "./hud.js";
-import { JEV_ESCALATE, JEV_INTENTS, JEV_QUESTIONS, JEV_ROUTES, JEV_SCALES } from "./prompt.js";
+import { EMOTIONS, EXPRESSIONS, JEV_ESCALATE, JEV_INTENTS, JEV_QUESTIONS, JEV_ROUTES, JEV_SCALES, TRAITS } from "./prompt.js";
 
 export { JEV_ROUTES };
 
@@ -69,6 +69,10 @@ export function describe(f, previous = null) {
   if (face) {
     const rel = face.vs_baseline || {};
     const parts = [];
+    const expr = face.expression || {};
+    if ((expr.top || "neutral") !== "neutral" && (expr.share || 0) >= 0.25) {
+      parts.push(`looks ${EXPRESSIONS[expr.top][0].toLowerCase()}${expr.share >= 0.5 ? " most of the time" : " at times"}`);
+    }
     if ((rel.smile || 0) >= 0.15) parts.push("smiling more than usual");
     else if ((rel.smile || 0) <= -0.15) parts.push("smiling less than usual");
     if ((rel.frown || 0) >= 0.08) parts.push("frowning");
@@ -102,8 +106,8 @@ export function describe(f, previous = null) {
   }
 
   if (previous) {
-    lines.push(`Just before: ${JEV_INTENTS[previous.intent_key][0].toLowerCase()}, came across `
-      + `${previous.words.confidence} and ${previous.words.tension}.`);
+    lines.push(`Just before: ${JEV_INTENTS[previous.intent_key][0].toLowerCase()}, looking `
+      + `${EMOTIONS[previous.emotion][0].toLowerCase()}.`);
   }
   return lines.join("\n");
 }
@@ -121,22 +125,29 @@ function scalePosition(answer, levels) {
   return Math.max(0, Math.min(1, Number(score) / (levels - 1)));
 }
 
-/** Scores (0-1, valence -1..1), intent and certainty from a /systemone response (parse_decision). */
-export function parseDecision(data, lang = "en") {
-  const answers = data && typeof data.answers === "object" && data.answers ? data.answers : (data || {});
-  const out = { words: {} };
-  for (const [key, [, levels]] of Object.entries(JEV_SCALES)) {
-    const pos = scalePosition(answers[key] || {}, levels.length);
-    if (pos == null) return null;
-    out[key] = key === "valence" ? round2(pos * 2 - 1) : round2(pos);
-    out.words[key] = levels[Math.floor(pos * (levels.length - 1) + 0.5)];
-  }
-  const a = answers.intent || {};
+/** A Choice answer's pick and its probability (_choice in jev.py). */
+function choice(a) {
   const probs = Object.fromEntries(Object.entries(a.probabilities || {}).map(([k, p]) => [k, Number(p)]));
   const keys = Object.keys(probs);
   const key = a.choice || (keys.length ? keys.reduce((x, y) => (probs[y] > probs[x] ? y : x)) : null);
+  return [key, Number(probs[key] ?? a.confidence ?? 0)];
+}
+
+/** Traits (0-1), emotion, valence (-1..1), intent and certainty from a /systemone response (parse_decision). */
+export function parseDecision(data, lang = "en") {
+  const answers = data && typeof data.answers === "object" && data.answers ? data.answers : (data || {});
+  const out = { traits: {}, words: {} };
+  for (const [key, [, levels]] of Object.entries(JEV_SCALES)) {
+    const pos = scalePosition(answers[key] || {}, levels.length);
+    if (pos == null) return null;
+    if (key in TRAITS) out.traits[key] = round2(pos);
+    else out[key] = key === "valence" ? round2(pos * 2 - 1) : round2(pos);
+    out.words[key] = levels[Math.floor(pos * (levels.length - 1) + 0.5)];
+  }
+  const [emotion] = choice(answers.emotion || {});
+  out.emotion = emotion in EMOTIONS ? emotion : "calm";
+  const [key, sure] = choice(answers.intent || {});
   if (!(key in JEV_INTENTS)) return null;
-  const sure = Number(probs[key] ?? a.confidence ?? 0);
   return Object.assign(out, {
     intent_key: key, intent: JEV_INTENTS[key][lang === "zh" ? 1 : 0],
     intent_certainty: round2(sure), certain: sure >= JEV_ESCALATE,
@@ -146,8 +157,10 @@ export function parseDecision(data, lang = "en") {
 /** Jev's decision, as the LLM is told it (decision_note). */
 export function decisionNote(d) {
   const w = d.words;
-  return `\nJev's decision for this window (settled): intent "${d.intent}"; comes across ${w.confidence}; `
-    + `${w.focus}; ${w.tension}; tone ${w.valence}. Reply with only reading, quote and evidence, written to fit this decision.`;
+  const top = Object.entries(d.traits).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  return `\nJev's decision for this window (settled): intent "${d.intent}"; emotion `
+    + `${EMOTIONS[d.emotion][0].toLowerCase()} (${w.emotion_intensity}); stands out: ${top.map(([k]) => w[k]).join(", ")}; `
+    + `tone ${w.valence}. Reply with only reading, quote and evidence, written to fit this decision.`;
 }
 
 export class JevUnavailable extends Error {

@@ -1,7 +1,7 @@
 // Cartoon HUD for live mode: white "stickers" with ink outlines and hard shadows.
 // facial/render.py draws the same design onto rendered videos.
 
-import { PROVIDERS } from "./prompt.js";
+import { EMOTIONS, PROVIDERS, TRAITS } from "./prompt.js";
 
 const tag = (source, rules) => (source === "jev" ? "Jev" : PROVIDERS[source]?.name ?? rules);
 
@@ -10,13 +10,13 @@ export const judgeLabel = (j, rules = "Rules") => (j.writer ? `${tag(j.source, r
 
 export const STRINGS = {
   en: {
-    left: "Left hand", right: "Right hand", verdict: "Verdict", confidence: "Confident", focus: "Focused",
-    tension: "Tense", intent: "Intent", arc: "Mood", vision: "VISION", rules: "Rules",
+    left: "Left hand", right: "Right hand", face: "Face", verdict: "Verdict",
+    intent: "Intent", arc: "Mood", vision: "VISION", rules: "Rules",
     footer: "MediaPipe · {judge} · demo only", collecting: "Warming up", judging: "Thinking", live: "LIVE", playing: "PLAYING",
   },
   zh: {
-    left: "左手", right: "右手", verdict: "综合判定", confidence: "自信", focus: "专注",
-    tension: "紧张", intent: "意图", arc: "情绪弧", vision: "VISION", rules: "规则",
+    left: "左手", right: "右手", face: "表情", verdict: "综合判定",
+    intent: "意图", arc: "情绪弧", vision: "VISION", rules: "规则",
     footer: "MediaPipe · {judge} · 仅供演示", collecting: "准备中", judging: "判定中", live: "直播", playing: "播放中",
   },
 };
@@ -43,10 +43,15 @@ export function handLabel(h, lang) {
 const FONT = 'Fredoka, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", ui-rounded, system-ui, sans-serif';
 export const THEME = {
   ink: "#1e1b2e", paper: "#fff6e6", white: "#ffffff", muted: "#6b6680",
-  blue: "#5b6cff", yellow: "#ffc83d", coral: "#ff6b6b", mint: "#33d1a0", orange: "#ff9f43",
+  blue: "#5b6cff", yellow: "#ffc83d", coral: "#ff6b6b", mint: "#33d1a0", orange: "#ff9f43", sky: "#7fd3ff",
 };
 const T = THEME;
 const HAND_COLOURS = [THEME.yellow, THEME.mint]; // pointer + dot colour per hand label
+// One colour per trait, so a bar is recognisable at a glance (TRAIT_COLOURS in render.py).
+const TRAIT_COLOURS = {
+  confident: T.blue, nervous: T.coral, enthusiastic: T.orange, warm: T.yellow,
+  assertive: T.blue, defensive: T.coral, engaged: T.mint, hesitant: T.sky,
+};
 const HAND_EDGES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
   [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
 
@@ -61,6 +66,39 @@ export function valenceColour(v) {
 }
 
 const font = (weight, size) => `${weight} ${size}px ${FONT}`;
+
+/**
+ * A small cartoon face for an expression or emotion. glyph: [mouth, brows, fill] from
+ * EXPRESSIONS / EMOTIONS (expressions.py); render.py draws the same faces.
+ */
+export function drawGlyph(ctx, cx, cy, r, [mouth, brows, fill], u) {
+  const lw = Math.max(1.3 * u, 0.15 * r);
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fillStyle = T[fill] || T.paper; ctx.fill();
+  ctx.lineWidth = Math.max(1.8 * u, 0.16 * r); ctx.strokeStyle = T.ink; ctx.stroke();
+  ctx.fillStyle = T.ink;
+  for (const sx of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + sx * 0.36 * r, cy - 0.12 * r, 0.12 * r, 0, 2 * Math.PI); ctx.fill(); }
+  ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const line = (pts) => { ctx.beginPath(); ctx.moveTo(...pts[0]); for (const p of pts.slice(1)) ctx.lineTo(...p); ctx.stroke(); };
+  for (const sx of [-1, 1]) { // brows: [outer, inner] per side
+    const at = (dx, dy) => [cx + sx * dx * r, cy + dy * r];
+    if (brows === "sad") line([at(0.6, -0.38), at(0.18, -0.54)]);
+    else if (brows === "angry") line([at(0.6, -0.56), at(0.16, -0.38)]);
+    else if (brows === "up" || (brows === "one" && sx > 0)) line([at(0.58, -0.56), at(0.16, -0.62)]);
+    else if (brows === "one") line([at(0.58, -0.45), at(0.16, -0.45)]);
+  }
+  const my = cy + 0.36 * r;
+  if (mouth === "smile") { ctx.beginPath(); ctx.arc(cx, cy + 0.05 * r, 0.46 * r, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke(); }
+  else if (mouth === "grin") {
+    ctx.beginPath(); ctx.moveTo(cx - 0.42 * r, cy + 0.18 * r); ctx.arc(cx, cy + 0.18 * r, 0.42 * r, 0, Math.PI); ctx.closePath();
+    ctx.fill();
+  } else if (mouth === "frown") { ctx.beginPath(); ctx.arc(cx, cy + 0.78 * r, 0.42 * r, 1.25 * Math.PI, 1.75 * Math.PI); ctx.stroke(); }
+  else if (mouth === "o") { ctx.beginPath(); ctx.arc(cx, my + 0.02 * r, 0.17 * r, 0, 2 * Math.PI); ctx.stroke(); }
+  else if (mouth === "wavy") line([[cx - 0.36 * r, my], [cx - 0.18 * r, my - 0.1 * r], [cx, my], [cx + 0.18 * r, my - 0.1 * r], [cx + 0.36 * r, my]]);
+  else if (mouth === "smirk") line([[cx - 0.3 * r, my + 0.04 * r], [cx + 0.18 * r, my], [cx + 0.34 * r, my - 0.14 * r]]);
+  else line([[cx - 0.3 * r, my], [cx + 0.3 * r, my]]);
+  ctx.lineCap = "round";
+}
 
 export function wrap(ctx, text, maxW, maxLines) {
   const tokens = text.match(/[　-鿿＀-￯]|[^\s　-鿿＀-￯]+\s*|\s+/g) || [];
@@ -118,16 +156,27 @@ export class Hud {
     this.arrivals.push(performance.now());
   }
 
+  /** A trait of the latest judgment, easing in from the previous window's value. */
   value(key) {
     const k = this.judgments.length - 1;
-    const cur = this.judgments[k][key];
+    const cur = this.judgments[k].traits[key];
     if (k === 0) return cur;
-    const prev = this.judgments[k - 1][key];
+    const prev = this.judgments[k - 1].traits[key];
     return prev + (cur - prev) * smoothstep((performance.now() - this.arrivals[k]) / 600);
   }
 
+  /** The three traits that stand out most in the latest window (keys, highest first). */
+  topTraits() {
+    return Object.entries(this.judgments[this.judgments.length - 1].traits).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k);
+  }
+
+  traitLabel(key) { return TRAITS[key][this.lang === "zh" ? 1 : 0]; }
+
+  emotionLabel(key) { return EMOTIONS[key][this.lang === "zh" ? 1 : 0]; }
+
   /**
-   * state: {t, shot, hands: [{label, score, anchor:[x,y]}] (up to two), subtitle, judge,
+   * state: {t, shot, hands: [{label, score, anchor:[x,y]}] (up to two), face: {label, score, anchor, glyph} | null,
+   *         subtitle, judge,
    *         status: {kind: "live"|"judging"|"collecting", text}, skeleton: {hands, face} | null}
    * Coordinates are CSS pixels; the caller sets the device-pixel transform.
    */
@@ -141,7 +190,9 @@ export class Hud {
     const compact = portrait;
     if (state.skeleton) this.drawSkeleton(ctx, u, state.skeleton);
     this.drawChips(ctx, W, u, state);
-    if (state.hands && state.hands.length) this.drawGestures(ctx, W, H, u, state.hands, compact);
+    const stickers = [...(state.face ? [{ ...state.face, colour: T.blue }] : []),
+      ...(state.hands || []).map((h, i) => ({ ...h, colour: HAND_COLOURS[i] }))];
+    if (stickers.length) this.drawGestures(ctx, W, H, u, stickers, compact);
 
     const footTop = this.drawFooter(ctx, H, u, state.judge);
     const subTop = this.drawSubtitle(ctx, W, footTop - 8 * u, u, portrait, state.subtitle);
@@ -190,12 +241,12 @@ export class Hud {
     const x = 14 * u;
     ctx.font = font(700, 10 * u);
     const scoreW = compact ? ctx.measureText(`${this.s.vision} 0.00`).width + 22 * u : 0; // score inside the sticker
-    const items = hands.map((hand, i) => {
+    const items = hands.map((hand) => {
       let size = (compact ? 15 : 19) * u;
       ctx.font = font(700, size);
       while (ctx.measureText(hand.label).width > W - 2 * x - 40 * u - scoreW && size > 11) { size -= 1; ctx.font = font(700, size); }
       const w = ctx.measureText(hand.label).width + 38 * u + scoreW, h = size + (compact ? 12 : 18) * u;
-      return { ...hand, size, w, h, colour: HAND_COLOURS[i] };
+      return { ...hand, size, w, h };
     });
     let y = (compact ? 42 : 46) * u;
     for (const it of items) { it.y = y; y += it.h + (compact ? 8 : 40) * u; }
@@ -215,9 +266,12 @@ export class Hud {
     }
     for (const it of items) {
       sticker(ctx, x, it.y, it.w, it.h, 14 * u, u, { shadow: 3 });
-      ctx.beginPath(); ctx.arc(x + 16 * u, it.y + it.h / 2, 6 * u, 0, 2 * Math.PI);
-      ctx.fillStyle = it.colour; ctx.fill();
-      ctx.lineWidth = 2 * u; ctx.strokeStyle = T.ink; ctx.stroke();
+      if (it.glyph) drawGlyph(ctx, x + 16 * u, it.y + it.h / 2, 8 * u, it.glyph, u); // the face sticker
+      else {
+        ctx.beginPath(); ctx.arc(x + 16 * u, it.y + it.h / 2, 6 * u, 0, 2 * Math.PI);
+        ctx.fillStyle = it.colour; ctx.fill();
+        ctx.lineWidth = 2 * u; ctx.strokeStyle = T.ink; ctx.stroke();
+      }
       ctx.font = font(700, it.size);
       ctx.fillStyle = T.ink;
       ctx.fillText(it.label, x + 28 * u, it.y + it.h / 2 + 0.5 * u);
@@ -235,7 +289,7 @@ export class Hud {
       const pw = W - 28 * u;
       return { x0: 14 * u, y0: 0, pw, ph: 100 * u };
     }
-    const ph = 178 * u;
+    const ph = 206 * u;
     const pw = 262 * u;
     return { x0: W - pw - 22 * u, y0: H - 104 * u - ph, pw, ph };
   }
@@ -251,34 +305,45 @@ export class Hud {
     const titleW = ctx.measureText(s.verdict).width;
     pill(ctx, x0 + 22 * u + titleW, y0 + 22 * u, tag(j.source, s.rules), u, { size: 11, fill: T.yellow });
 
-    const bars = [["confidence", T.blue], ["focus", T.mint], ["tension", T.coral]];
+    // The emotion: a cartoon face, its name and how strongly it shows.
+    let cy = y0 + 54 * u;
+    drawGlyph(ctx, x0 + 27 * u, cy, 13 * u, EMOTIONS[j.emotion][3], u);
+    const inten = j.emotion_intensity.toFixed(2);
+    ctx.font = font(700, 11 * u);
+    const intenW = ctx.measureText(inten).width + 16 * u;
+    pill(ctx, x0 + pw - 14 * u - intenW, cy, inten, u, { size: 11, fill: T.orange });
+    ctx.font = font(700, 19 * u);
+    ctx.fillStyle = T.ink;
+    ctx.fillText(wrap(ctx, this.emotionLabel(j.emotion), pw - 72 * u - intenW, 1)[0] || "", x0 + 48 * u, cy);
+
+    // The three traits that stand out most in this window.
     ctx.font = font(600, 13 * u);
-    const labelW = Math.max(...bars.map(([k]) => ctx.measureText(s[k]).width));
+    const labelW = Math.max(...Object.keys(TRAITS).map((k) => ctx.measureText(this.traitLabel(k)).width));
     const bx0 = x0 + 24 * u + labelW, bx1 = Math.max(x0 + pw - 50 * u, bx0 + 4 * u);
-    bars.forEach(([key, colour], i) => {
-      const cy = y0 + 52 * u + i * 25 * u;
+    this.topTraits().forEach((key, i) => {
+      const by = y0 + 88 * u + i * 25 * u;
       ctx.font = font(600, 13 * u);
       ctx.fillStyle = T.muted;
-      ctx.fillText(s[key], x0 + 14 * u, cy);
+      ctx.fillText(this.traitLabel(key), x0 + 14 * u, by);
       const v = this.value(key);
-      rr(ctx, bx0, cy - 6 * u, bx1 - bx0, 12 * u, 6 * u);
+      rr(ctx, bx0, by - 6 * u, bx1 - bx0, 12 * u, 6 * u);
       ctx.fillStyle = T.paper; ctx.fill();
       if (v > 0.01) {
         ctx.save();
-        rr(ctx, bx0, cy - 6 * u, bx1 - bx0, 12 * u, 6 * u);
+        rr(ctx, bx0, by - 6 * u, bx1 - bx0, 12 * u, 6 * u);
         ctx.clip();
-        ctx.fillStyle = colour;
-        ctx.fillRect(bx0, cy - 6 * u, (bx1 - bx0) * v, 12 * u);
+        ctx.fillStyle = TRAIT_COLOURS[key];
+        ctx.fillRect(bx0, by - 6 * u, (bx1 - bx0) * v, 12 * u);
         ctx.restore();
       }
-      rr(ctx, bx0, cy - 6 * u, bx1 - bx0, 12 * u, 6 * u);
+      rr(ctx, bx0, by - 6 * u, bx1 - bx0, 12 * u, 6 * u);
       ctx.lineWidth = 2 * u; ctx.strokeStyle = T.ink; ctx.stroke();
       ctx.font = font(700, 13 * u);
       ctx.fillStyle = T.ink;
-      ctx.fillText(v.toFixed(2), bx1 + 8 * u, cy);
+      ctx.fillText(v.toFixed(2), bx1 + 8 * u, by);
     });
 
-    let cy = y0 + 52 * u + 3 * 25 * u + 2 * u;
+    cy = y0 + 88 * u + 3 * 25 * u + 2 * u;
     ctx.font = font(600, 12 * u);
     ctx.fillStyle = T.muted;
     ctx.fillText(s.intent, x0 + 14 * u, cy);
@@ -314,13 +379,18 @@ export class Hud {
     const j = this.judgments[this.judgments.length - 1];
     sticker(ctx, x0, y0, pw, ph, 16 * u, u, { shadow: 3 });
 
-    let cy = y0 + 19 * u;
+    // Row 1: the emotion (face, name, strength), who judged, and the mood dots.
+    let cy = y0 + 20 * u;
+    drawGlyph(ctx, x0 + 22 * u, cy, 10 * u, EMOTIONS[j.emotion][3], u);
     ctx.font = font(700, 16 * u);
     ctx.fillStyle = T.ink;
-    ctx.fillText(s.verdict, x0 + 12 * u, cy);
-    pill(ctx, x0 + 20 * u + ctx.measureText(s.verdict).width, cy, tag(j.source, s.rules), u, { size: 10, fill: T.yellow, shadow: 0, line: 1.5 });
+    const name = this.emotionLabel(j.emotion);
+    ctx.fillText(name, x0 + 38 * u, cy);
+    let px = x0 + 44 * u + ctx.measureText(name).width;
+    px += pill(ctx, px, cy, j.emotion_intensity.toFixed(2), u, { size: 10, fill: T.orange, shadow: 0, line: 1.5 }) + 5 * u;
+    px += pill(ctx, px, cy, tag(j.source, s.rules), u, { size: 10, fill: T.yellow, shadow: 0, line: 1.5 }) + 8 * u;
     const r = 5 * u, gap = 4 * u;
-    const n = Math.min(this.judgments.length, 8);
+    const n = Math.max(0, Math.min(this.judgments.length, 8, Math.floor((x0 + pw - 12 * u - px) / (2 * r + gap))));
     for (let i = 0; i < n; i++) {
       const k = this.judgments.length - n + i, current = k === this.judgments.length - 1;
       const cx = x0 + pw - 12 * u - r - (n - 1 - i) * (2 * r + gap);
@@ -330,26 +400,26 @@ export class Hud {
       ctx.lineWidth = 1.8 * u; ctx.strokeStyle = T.ink; ctx.stroke();
     }
 
-    const bars = [["confidence", T.blue], ["focus", T.mint], ["tension", T.coral]];
+    // Row 2: the three traits that stand out most, side by side.
     const colGap = 10 * u, colW = (pw - 24 * u - 2 * colGap) / 3;
-    bars.forEach(([key, colour], i) => {
+    this.topTraits().forEach((key, i) => {
       const bx = x0 + 12 * u + i * (colW + colGap);
       const v = this.value(key);
       ctx.font = font(600, 11 * u);
       ctx.fillStyle = T.muted;
-      ctx.fillText(wrap(ctx, s[key], colW - 30 * u, 1)[0] || "", bx, y0 + 42 * u);
+      ctx.fillText(wrap(ctx, this.traitLabel(key), colW - 30 * u, 1)[0] || "", bx, y0 + 43 * u);
       ctx.font = font(700, 11 * u);
       ctx.fillStyle = T.ink;
       const val = v.toFixed(2);
-      ctx.fillText(val, bx + colW - ctx.measureText(val).width, y0 + 42 * u);
-      const by = y0 + 51 * u, bh = 9 * u;
+      ctx.fillText(val, bx + colW - ctx.measureText(val).width, y0 + 43 * u);
+      const by = y0 + 52 * u, bh = 9 * u;
       rr(ctx, bx, by, colW, bh, bh / 2);
       ctx.fillStyle = T.paper; ctx.fill();
       if (v > 0.01) {
         ctx.save();
         rr(ctx, bx, by, colW, bh, bh / 2);
         ctx.clip();
-        ctx.fillStyle = colour;
+        ctx.fillStyle = TRAIT_COLOURS[key];
         ctx.fillRect(bx, by, colW * v, bh);
         ctx.restore();
       }
@@ -357,6 +427,7 @@ export class Hud {
       ctx.lineWidth = 1.8 * u; ctx.strokeStyle = T.ink; ctx.stroke();
     });
 
+    // Row 3: the intent and how sure the judge is.
     cy = y0 + ph - 19 * u;
     ctx.font = font(600, 12 * u);
     ctx.fillStyle = T.muted;

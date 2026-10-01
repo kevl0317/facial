@@ -11,6 +11,7 @@ from collections import defaultdict
 import numpy as np
 
 from .audio import AudioTrack, voice_features
+from .expressions import BIAS_KEYS, summarize_expressions
 from .transcript import Segment
 
 FILLERS = {"um", "uh", "erm", "hmm", "like", "basically", "actually", "嗯", "啊", "呃", "那个", "就是"}
@@ -131,7 +132,7 @@ def clip_baseline(samples: list[dict]) -> dict:
         return round(float(np.median(vals)), 3) if vals else None
 
     return {"yaw": med("yaw"), "pitch": med("pitch"), "face_size": med("size"),
-            **{k: med(k) for k in RELATIVE_FACE}}
+            **{k: med(k) for k in RELATIVE_FACE}, **{k: med(k) for k in BIAS_KEYS if k not in RELATIVE_FACE}}
 
 
 def _hand_to_face(sample: dict) -> bool:
@@ -238,6 +239,7 @@ def _face_and_head(S: list[dict], base: dict) -> tuple[dict, dict]:
     deltas = {k: round(face[k] - base[k], 2) for k in RELATIVE_FACE if base.get(k) is not None}
     if deltas:
         face["vs_baseline"] = deltas
+    face["expression"] = summarize_expressions(F, base)
 
     blink = arr("blink")
     blinks, closed = 0, False

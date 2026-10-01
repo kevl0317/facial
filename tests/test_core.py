@@ -95,8 +95,12 @@ def test_window_features_and_heuristic_judgment():
     assert set(feats) >= {"scene", "speaker", "subtitle", "voice", "gesture"}
     assert feats["scene"]["shot"] == "medium"
     j = heuristic_judgment(feats, "en", lambda h: hand_label(h, "en"))
-    for key in ("confidence", "focus", "tension", "intent_certainty"):
-        assert 0.0 <= j[key] <= 1.0
+    assert set(j["traits"]) == {"confident", "nervous", "enthusiastic", "warm", "assertive", "defensive",
+                                "engaged", "hesitant"}
+    assert all(0.0 <= v <= 1.0 for v in j["traits"].values())
+    assert 0.0 <= j["intent_certainty"] <= 1.0 and 0.0 <= j["emotion_intensity"] <= 1.0
+    assert j["emotion"] == "calm"  # the test faces show no clear expression
+    assert feats["gesture"]["face"]["expression"]["top"] == "neutral"
     assert -1.0 <= j["valence"] <= 1.0
     assert j["source"] == "heuristic"
 

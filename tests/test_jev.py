@@ -20,9 +20,13 @@ def _window():
     return f
 
 
-def jev_reply(intent="explaining", p=0.82, levels=(3, 2.4, 1, 3)):
-    scales = dict(zip(("confidence", "focus", "tension", "valence"), levels))
-    answers = {k: {"type": "score", "score": v, "confidence": 0.6} for k, v in scales.items()}
+SCALES = {"confident": 3, "nervous": 1, "enthusiastic": 3.4, "warm": 3, "assertive": 2, "defensive": 1,
+          "engaged": 3, "hesitant": 1, "valence": 3, "emotion_intensity": 2.6}
+
+
+def jev_reply(intent="explaining", p=0.82, emotion="happy"):
+    answers = {k: {"type": "score", "score": v, "confidence": 0.6} for k, v in SCALES.items()}
+    answers["emotion"] = {"type": "choice", "choice": emotion, "confidence": 0.7}
     answers["intent"] = {"type": "choice", "choice": intent, "confidence": p,
                          "probabilities": {intent: p, "stating": round(1 - p, 2)}}
     return 200, {"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 300}}
@@ -67,13 +71,17 @@ def test_jev_decides_and_the_llm_only_writes():
     assert body["model"] == "jev-latest" and body["questions"] == JEV_QUESTIONS and "Voice:" in body["state"]
 
     assert result["source"] == "jev" and result["writer"] == "claude"
-    assert (result["confidence"], result["focus"], result["tension"], result["valence"]) == (0.75, 0.6, 0.25, 0.5)
+    t = result["traits"]
+    assert (t["confident"], t["nervous"], t["enthusiastic"], result["valence"]) == (0.75, 0.25, 0.85, 0.5)
+    assert result["emotion"] == "happy" and result["emotion_intensity"] == 0.65
     assert result["intent"] == "Explaining" and result["intent_certainty"] == 0.82
     assert result["reading"] == "reading 1"  # the words come from the LLM
 
     call = claude.client.beta.messages.calls[0]
     assert call["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": WRITE_SCHEMA}}
-    assert "Jev's decision for this window (settled): intent \"Explaining\"" in call["messages"][0]["content"]
+    note = call["messages"][0]["content"]
+    assert "Jev's decision for this window (settled): intent \"Explaining\"; emotion happy (strongly)" in note
+    assert "stands out: more enthusiastic than usual, more confident than usual, more warm than usual" in note
     assert "Jev, a fast decision model" in call["system"]
 
 
@@ -116,8 +124,9 @@ def test_a_rejected_jev_and_no_llm_falls_back_to_rules():
 
 def test_decisions_can_come_from_probabilities_alone():
     data = {"answers": {k: {"type": "score", "probabilities": {"0": 0, "1": 0, "2": 0.5, "3": 0.5, "4": 0}}
-                        for k in ("confidence", "focus", "tension", "valence")}}
+                        for k in SCALES}}
+    data["answers"]["emotion"] = {"type": "choice", "probabilities": {"skeptical": 0.6, "calm": 0.4}}
     data["answers"]["intent"] = {"type": "choice", "probabilities": {"questioning": 0.7, "stating": 0.3}}
     d = parse_decision(data, "zh")
-    assert d["confidence"] == 0.62 and d["valence"] == 0.25 and d["words"]["tension"] == "tense"
-    assert d["intent"] == "提出问题" and d["certain"]
+    assert d["traits"]["confident"] == 0.62 and d["valence"] == 0.25 and d["words"]["nervous"] == "more nervous than usual"
+    assert d["emotion"] == "skeptical" and d["intent"] == "提出问题" and d["certain"]

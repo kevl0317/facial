@@ -1,8 +1,11 @@
 // The five fields per window (scene, speaker, subtitle, voice, gesture), computed in
 // the browser. A port of facial/features.py; keep the two in step.
 
+import { summarizeExpressions } from "./expressions.js";
+
 const FILLERS = ["um", "uh", "erm", "hmm", "like", "basically", "actually", "嗯", "啊", "呃", "那个", "就是"];
 const RELATIVE_FACE = ["smile", "frown", "brow_furrow", "brow_raise", "lip_press"];
+const BIAS_KEYS = ["brow_furrow", "lip_press", "squint", "frown", "brow_inner_up"]; // expressions.py
 const BEAT_SPEED = 1.5;
 
 const r = (v, d) => Math.round(v * 10 ** d) / 10 ** d;
@@ -39,6 +42,7 @@ export function clipBaseline(samples) {
   const med = (k) => { const v = faces.filter((f) => k in f).map((f) => f[k]); return v.length ? r(median(v), 3) : null; };
   const out = { yaw: med("yaw"), pitch: med("pitch"), face_size: med("size") };
   for (const k of RELATIVE_FACE) out[k] = med(k);
+  for (const k of BIAS_KEYS) if (!RELATIVE_FACE.includes(k)) out[k] = med(k);
   return out;
 }
 
@@ -127,6 +131,7 @@ function faceAndHead(S, base) {
   const deltas = {};
   for (const k of RELATIVE_FACE) if (base[k] !== null && base[k] !== undefined) deltas[k] = r(face[k] - base[k], 2);
   if (Object.keys(deltas).length) face.vs_baseline = deltas;
+  face.expression = summarizeExpressions(faces.map((s) => s.face), base);
 
   let blinks = 0, closed = false;
   for (const v of arr("blink")) {

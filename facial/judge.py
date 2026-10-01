@@ -18,6 +18,7 @@ import time
 import anthropic
 
 from . import __version__
+from .expressions import EMOTIONS, EXPRESSION_EMOTION, TRAITS
 from .jev import JEV_INTENTS, JevClient, decision_note
 from .net import JudgeUnavailable, _error_message, _post_json
 from .providers import OPENAI_REASONING, PROVIDERS, RULES, THINKING_MODELS, env_key, provider
@@ -31,33 +32,41 @@ SCHEMA = {
     "properties": {
         "reading": {"type": "string"},
         "quote": {"type": "string"},
-        "confidence": {"type": "number"},
-        "focus": {"type": "number"},
-        "tension": {"type": "number"},
+        "emotion": {"type": "string", "enum": list(EMOTIONS)},
+        "emotion_intensity": {"type": "number"},
+        "traits": {"type": "object", "properties": {k: {"type": "number"} for k in TRAITS},
+                   "required": list(TRAITS), "additionalProperties": False},
         "intent": {"type": "string"},
         "intent_certainty": {"type": "number"},
         "valence": {"type": "number"},
         "evidence": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["reading", "quote", "confidence", "focus", "tension", "intent",
-                 "intent_certainty", "valence", "evidence"],
+    "required": ["reading", "quote", "emotion", "emotion_intensity", "traits", "intent", "intent_certainty",
+                 "valence", "evidence"],
     "additionalProperties": False,
 }
 
+# The parts of a judgment a decision (Jev's, or the LLM's) settles; the rest is words.
+DECISION_KEYS = ("emotion", "emotion_intensity", "traits", "valence", "intent", "intent_certainty")
+
 SYSTEM_PROMPT = """\
-You are the judgment layer of a video-analysis pipeline that annotates how a person speaks: what their hands, face and voice are doing, and what communicative intent that suggests. The annotations are overlaid on the video for viewers who want to study body language in interviews and keynotes.
+You are the judgment layer of a video-analysis pipeline that annotates how a person speaks: what their hands, face and voice are doing, and what emotion and communicative intent that suggests. The annotations are overlaid on the video for viewers who want to study body language in interviews and keynotes.
 
 Upstream, computer vision (Google MediaPipe) and audio analysis have measured each time window of the clip. You receive one window per turn as JSON with five fields:
 - scene: shot type (close-up / medium / wide / cutaway), number of faces, hard cuts.
 - speaker: whether the tracked on-screen person is the one talking ("target"), visibly listening while someone else talks ("listening"), off-screen, or silent. lip_sync is the correlation between their jaw movement and the audio loudness.
 - subtitle: what was said in this window.
 - voice: loudness and pitch relative to this speaker's own median in the clip (dB, semitones), pitch variability, share of time voiced, pauses, speech rate (words/s), filler words.
-- gesture: the dominant hand state (hand, shape, palm facing, axis), the other hand's state when both hands are up (second) and the share of the window with both hands visible (two_hands), a short sequence of hand states with times relative to the window start, gesture energy (hand-lengths per second), beat gestures, hand-to-face contact, head movement and gaze, facial blendshape averages (0-1), blink rate and posture.
+- gesture: the dominant hand state (hand, shape, palm facing, axis), the other hand's state when both hands are up (second) and the share of the window with both hands visible (two_hands), a short sequence of hand states with times relative to the window start, gesture energy (hand-lengths per second), beat gestures, hand-to-face contact, head movement and gaze, facial blendshape averages (0-1), the facial expression read from the blendshapes (face.expression: the top expression, its share of the window and the runners-up; a rough reading of the face alone), blink rate and posture.
 
 Fuse the fields into one reading of the window:
 - reading: one vivid line of at most ~90 characters that ties the body language to what is being said, e.g. "Left hand spreads open as if laying out facts; the claim about culture comes out calm and firm." Lead with the gesture when there is one.
 - quote: the most telling short phrase from the subtitle, copied verbatim; an empty string if there is no subtitle.
-- confidence, focus, tension: 0-1 scores for what the person expresses in this window. 0.5 is this speaker's own baseline; move away from it only as far as the evidence supports.
+- emotion: the emotion the speaker is showing, read from the face, the voice and the words together. One of:
+""" + "".join(f"  - {k}: {v[2]}\n" for k, v in EMOTIONS.items()) + """\
+- emotion_intensity: 0-1, how strongly that emotion shows.
+- traits: a 0-1 score for each of these eight traits. 0.5 is this speaker's usual self; move away from it only as far as the evidence supports:
+""" + "".join(f"  - {k}: {v[3]}\n" for k, v in TRAITS.items()) + """\
 - intent: a 2-4 word label for the communicative act, e.g. "Stating a position", "Deflecting", "Building suspense", "Conceding a point", "Selling a vision".
 - intent_certainty: 0-1, how clearly the evidence supports that intent.
 - valence: -1 (negative) to +1 (positive) emotional tone, used for the emotion arc.
@@ -65,7 +74,7 @@ Fuse the fields into one reading of the window:
 
 Ground rules:
 - Use only the measurements and the subtitle. They are noisy: one blink spike or one odd frame is not a signal, so look for cues that agree across fields.
-- Describe expressed demeanor and communicative intent. Do not claim to know hidden thoughts or whether someone is lying, do not comment on health, and do not guess personal attributes.
+- Describe expressed emotion, demeanor and communicative intent. Do not claim to know hidden thoughts or whether someone is lying, do not comment on health, and do not guess personal attributes.
 - Refer to the person as "the speaker", or by the name the user gives in the clip context.
 - When the target is not speaking or not visible, say so in the reading, keep the scores near the previous window's, and lower intent_certainty.
 - Keep continuity with earlier windows in this conversation: the arc should read as one story, and a change in a score should reflect a change in the data.
@@ -97,6 +106,11 @@ JSON_RULE = ("- Reply with only the JSON object for the window: no prose, no cod
              f"It must match this JSON Schema: {json.dumps(SCHEMA, separators=(',', ':'))}\n")
 
 
+def top_traits(traits: dict, n: int = 3) -> list[tuple[str, float]]:
+    """The n traits that show most (ties keep TRAITS order)."""
+    return sorted(traits.items(), key=lambda kv: -kv[1])[:n]
+
+
 def _clamp(v, lo=0.0, hi=1.0) -> float:
     try:
         return round(max(lo, min(hi, float(v))), 2)
@@ -105,12 +119,14 @@ def _clamp(v, lo=0.0, hi=1.0) -> float:
 
 
 def normalise(j: dict, source: str, writer: str | None = None) -> dict:
+    emotion = str(j.get("emotion", "")).strip().lower()
+    traits = j.get("traits") if isinstance(j.get("traits"), dict) else {}
     out = {
         "reading": str(j.get("reading", "")).strip(),
         "quote": str(j.get("quote", "")).strip().strip('"“”'),
-        "confidence": _clamp(j.get("confidence")),
-        "focus": _clamp(j.get("focus")),
-        "tension": _clamp(j.get("tension")),
+        "emotion": emotion if emotion in EMOTIONS else "calm",
+        "emotion_intensity": _clamp(j.get("emotion_intensity")),
+        "traits": {k: _clamp(traits.get(k)) for k in TRAITS},
         "intent": str(j.get("intent", "")).strip(),
         "intent_certainty": _clamp(j.get("intent_certainty")),
         "valence": _clamp(j.get("valence"), -1.0, 1.0),
@@ -153,8 +169,9 @@ class BaseJudge:
             text += f"Clip baselines (medians): {json.dumps(clip['baseline'], separators=(',', ':'))}\n"
         if self.history:
             text += "Earlier windows, summarised (most recent last):\n" + "\n".join(
-                f"- W{h['window']}: {h['intent']} | confidence {h['confidence']:.2f}, focus {h['focus']:.2f}, "
-                f"tension {h['tension']:.2f}, valence {h['valence']:+.2f} | {h['reading']}"
+                f"- W{h['window']}: {h['intent']} | {h['emotion']} {h['emotion_intensity']:.2f} | "
+                + ", ".join(f"{k} {v:.2f}" for k, v in top_traits(h["traits"]))
+                + f", valence {h['valence']:+.2f} | {h['reading']}"
                 for h in self.history[-6:]) + "\n"
         return text + "\n"
 
@@ -195,8 +212,7 @@ class BaseJudge:
         data, assistant = out
         self.messages.append(assistant)
         if decision:
-            data = {**data, **{k: decision[k] for k in ("confidence", "focus", "tension", "valence", "intent",
-                                                        "intent_certainty")}}
+            data = {**data, **{k: decision[k] for k in DECISION_KEYS}}
         result = normalise(data, self.id)
         self.history.append({"window": feats["window"], **result})
         return result
@@ -409,7 +425,8 @@ class JevJudge:
         return {"reading": f"{gesture}{sep}{d['intent']}" if gesture else d["intent"],
                 "quote": _quote(feats["subtitle"]) if feats["subtitle"] else "",
                 "evidence": [f"Jev: {JEV_INTENTS[d['intent_key']][0]} ({d['intent_certainty']:.2f})",
-                             f"Jev: {w['confidence']}, {w['focus']}, {w['tension']}, {w['valence']}"]}
+                             f"Jev: {d['emotion']} ({w['emotion_intensity']}); "
+                             + ", ".join(w[k] for k, _ in top_traits(d["traits"]))]}
 
     def judge(self, feats: dict, clip: dict | None = None) -> dict | None:
         if self.jev is None and self.llm is None:
@@ -435,8 +452,7 @@ class JevJudge:
                 return None  # neither could judge this window: the caller uses the rules
 
         self.previous = decision
-        scores = {k: decision[k] for k in ("confidence", "focus", "tension", "valence", "intent",
-                                           "intent_certainty")}
+        scores = {k: decision[k] for k in DECISION_KEYS}
         written = self._ask_llm(feats, clip, decision)
         if written is not None:
             return normalise({**written, **scores}, "jev", writer=written["source"])
@@ -490,24 +506,49 @@ def _quote(text: str) -> str:
 def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     """Transparent rule-based scores; used without an API key or when an AI judge call fails."""
     voice, g, spk = f["voice"], f["gesture"], f["speaker"]
-    face, head = g.get("face", {}), g.get("head", {})
+    face, head, posture = g.get("face", {}), g.get("head", {}), g.get("posture", {})
     rel = face.get("vs_baseline", {})
     dom = g.get("dominant")
     blink = face.get("blink_per_min", 17)
+    gaze_away = head.get("gaze_away", 0.2)
+    loud = voice.get("loudness_rel_db", 0)
+    beats = min(g.get("beats", 0), 3)
+    pauses, fillers = voice.get("pauses", 0), voice.get("fillers", 0)
+    touch = g.get("hand_to_face", 0)
+    arms = posture.get("arms_open")
 
-    tension = (0.15 + 1.0 * max(0, rel.get("lip_press", 0)) + 0.8 * max(0, rel.get("brow_furrow", 0))
-               + 0.5 * g.get("hand_to_face", 0) + 0.006 * max(0, blink - 22)
-               + 0.05 * voice.get("pauses", 0) + 0.05 * voice.get("fillers", 0)
-               + 0.04 * max(0, voice.get("pitch_var_st", 2) - 3))
     open_gesture = 1.0 if dom and dom["shape"] in ("open_palm", "pointing", "fist") else 0.0
+    forceful = 1.0 if dom and dom["shape"] in ("fist", "pointing") else 0.0
     steadiness = 1.0 - min(1.0, (head.get("yaw_std", 5) + head.get("pitch_std", 5)) / 20)
-    confidence = (0.45 + 0.03 * voice.get("loudness_rel_db", 0) + 0.12 * open_gesture
-                  + 0.1 * steadiness - 0.25 * head.get("gaze_away", 0) - 0.3 * (tension - 0.15)
-                  + 0.05 * min(g.get("beats", 0), 3))
-    focus = (0.45 + 0.3 * (1 - head.get("gaze_away", 0.3)) + 0.1 * steadiness
-             + 0.1 * voice.get("voiced_frac", 0) - 0.2 * g.get("hand_to_face", 0))
+    nervous = (0.35 + 1.0 * max(0, rel.get("lip_press", 0)) + 0.8 * max(0, rel.get("brow_furrow", 0)) + 0.5 * touch
+               + 0.006 * max(0, blink - 22) + 0.05 * pauses + 0.05 * fillers
+               + 0.04 * max(0, voice.get("pitch_var_st", 2) - 3))
+    traits = {
+        "confident": (0.45 + 0.03 * loud + 0.12 * open_gesture + 0.1 * steadiness - 0.25 * gaze_away
+                      - 0.3 * (nervous - 0.35) + 0.05 * beats),
+        "nervous": nervous,
+        "enthusiastic": (0.35 + 0.1 * min(g.get("energy", 0), 3) + 0.04 * max(0, voice.get("pitch_var_st", 2) - 2)
+                         + 0.6 * max(0, rel.get("smile", 0)) + 0.04 * beats + 0.02 * max(0, loud)
+                         + (0.05 if voice.get("speech_rate_wps", 0) > 3 else 0)),
+        "warm": (0.4 + 0.3 * face.get("smile", 0) + 0.8 * rel.get("smile", 0) + 0.03 * min(head.get("nods", 0), 3)
+                 - 0.8 * max(0, rel.get("frown", 0)) - 0.4 * max(0, rel.get("brow_furrow", 0))),
+        "assertive": (0.4 + 0.03 * loud + 0.15 * forceful + 0.04 * beats + 0.08 * steadiness - 0.2 * gaze_away
+                      - 0.04 * pauses),
+        "defensive": (0.3 + (0.2 if arms is not None and arms <= 0.25 else 0) + 0.4 * touch
+                      + 0.6 * max(0, rel.get("lip_press", 0)) + 0.25 * gaze_away + 0.3 * max(0, rel.get("brow_furrow", 0))),
+        "engaged": (0.45 + 0.3 * (1 - gaze_away) + 0.1 * steadiness + 0.1 * voice.get("voiced_frac", 0)
+                    - 0.2 * touch),
+        "hesitant": (0.3 + 0.07 * pauses + 0.08 * fillers + 0.25 * gaze_away
+                     + (0.15 if spk["state"] == "target" and voice.get("voiced_frac", 0) < 0.4 else 0)),
+    }
     valence = (0.6 * face.get("smile", 0) - 0.6 * face.get("frown", 0)
                + 1.5 * rel.get("smile", 0) - 1.5 * rel.get("frown", 0) - 0.5 * rel.get("brow_furrow", 0))
+
+    # The emotion is what the face shows, when it clearly shows something.
+    expr = face.get("expression") or {}
+    shown = expr.get("top", "neutral") != "neutral" and expr.get("share", 0) >= 0.25
+    emotion = EXPRESSION_EMOTION[expr["top"]] if shown else "calm"
+    emotion_intensity = expr.get("share", 0) if shown else 0.3
 
     names = INTENTS[lang]
     text = f["subtitle"]
@@ -533,9 +574,9 @@ def heuristic_judgment(f: dict, lang: str = "en", hand_label=None) -> dict:
     reading = f"{gesture_text}{sep}{intent}" if gesture_text else intent
     return normalise({
         "reading": reading, "quote": _quote(text) if text else "",
-        "confidence": confidence, "focus": focus, "tension": tension, "intent": intent,
+        "emotion": emotion, "emotion_intensity": emotion_intensity, "traits": traits, "intent": intent,
         "intent_certainty": 0.45 if key != "default" else 0.3, "valence": valence,
-        "evidence": ["rule-based: blendshapes, head motion, voice, hand shape"],
+        "evidence": ["rule-based: face expression, blendshapes, head motion, voice, hand shape"],
     }, "heuristic")
 
 

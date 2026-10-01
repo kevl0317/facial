@@ -18,6 +18,7 @@ import os
 import time
 
 from . import __version__
+from .expressions import EMOTIONS, EXPRESSIONS, TRAITS
 from .net import JudgeUnavailable, _error_message, _post_json
 from .render import hand_label
 
@@ -32,18 +33,17 @@ JEV_ROUTES = {
                    "alt_urls": ["https://openrouter.ai/api/alpha/decisions"]},
 }
 
-# Ordered levels, lowest first; the middle level is the speaker's usual self (0.5).
+# Ordered levels, lowest first; for traits the middle level is the speaker's usual self (0.5).
 JEV_SCALES = {
-    "confidence": ("How confident does the speaker come across right now, compared with how they usually come across?",
-                   ["very unsure of themselves", "a little unsure", "as confident as usual", "confident",
-                    "very confident"]),
-    "focus": ("How focused and engaged is the speaker right now?",
-              ["distracted or checked out", "a little distracted", "as focused as usual", "focused",
-               "intensely focused"]),
-    "tension": ("How tense or stressed does the speaker seem right now?",
-                ["completely relaxed", "relaxed", "as tense as usual", "tense", "very tense"]),
+    **{k: (f"How {adj} does the speaker come across right now ({meaning}), compared with how they usually "
+           "come across?",
+           [f"not {adj} at all", f"less {adj} than usual", f"as {adj} as usual", f"more {adj} than usual",
+            f"very {adj}"])
+       for k, (_, _, adj, meaning) in TRAITS.items()},
     "valence": ("What is the emotional tone of this moment?",
                 ["very negative", "negative", "neutral", "positive", "very positive"]),
+    "emotion_intensity": ("How strongly is the speaker's main emotion showing?",
+                          ["barely", "faintly", "clearly", "strongly", "very strongly"]),
 }
 
 # key: (English label, Chinese label, what Jev should look for)
@@ -67,6 +67,8 @@ JEV_ESCALATE = 0.4
 
 JEV_QUESTIONS = {
     **{k: {"type": "score", "instructions": q, "criteria": levels} for k, (q, levels) in JEV_SCALES.items()},
+    "emotion": {"type": "choice", "instructions": "Which emotion is the speaker showing most?",
+                "criteria": {k: v[2] for k, v in EMOTIONS.items()}},
     "intent": {"type": "choice", "instructions": "What is the speaker mainly doing in this moment?",
                "criteria": {k: v[2] for k, v in JEV_INTENTS.items()}},
 }
@@ -143,6 +145,10 @@ def describe(f: dict, previous: dict | None = None) -> str:
     if face:
         rel = face.get("vs_baseline", {})
         parts = []
+        expr = face.get("expression") or {}
+        if expr.get("top", "neutral") != "neutral" and expr.get("share", 0) >= 0.25:
+            parts.append(f"looks {EXPRESSIONS[expr['top']][0].lower()}"
+                         + (" most of the time" if expr["share"] >= 0.5 else " at times"))
         if rel.get("smile", 0) >= 0.15:
             parts.append("smiling more than usual")
         elif rel.get("smile", 0) <= -0.15:
@@ -186,8 +192,8 @@ def describe(f: dict, previous: dict | None = None) -> str:
             lines.append("Posture: " + ", ".join(parts) + ".")
 
     if previous:
-        lines.append(f"Just before: {JEV_INTENTS[previous['intent_key']][0].lower()}, came across "
-                     f"{previous['words']['confidence']} and {previous['words']['tension']}.")
+        lines.append(f"Just before: {JEV_INTENTS[previous['intent_key']][0].lower()}, looking "
+                     f"{EMOTIONS[previous['emotion']][0].lower()}.")
     return "\n".join(lines)
 
 
@@ -206,31 +212,42 @@ def _scale_position(answer: dict, levels: int) -> float | None:
 
 
 def parse_decision(data: dict, lang: str = "en") -> dict | None:
-    """Scores (0-1, valence -1..1), intent and certainty from a /systemone response."""
+    """Traits (0-1), emotion, valence (-1..1), intent and certainty from a /systemone response."""
     answers = data.get("answers") if isinstance(data.get("answers"), dict) else data
-    out: dict = {"words": {}}
+    out: dict = {"traits": {}, "words": {}}
     for key, (_, levels) in JEV_SCALES.items():
         pos = _scale_position(answers.get(key) or {}, len(levels))
         if pos is None:
             return None
-        out[key] = round(pos * 2 - 1, 2) if key == "valence" else round(pos, 2)
+        if key in TRAITS:
+            out["traits"][key] = round(pos, 2)
+        else:
+            out[key] = round(pos * 2 - 1, 2) if key == "valence" else round(pos, 2)
         out["words"][key] = levels[int(pos * (len(levels) - 1) + 0.5)]  # half up, as in jev.js
-    a = answers.get("intent") or {}
-    probs = {k: float(p) for k, p in (a.get("probabilities") or {}).items()}
-    key = a.get("choice") or (max(probs, key=probs.get) if probs else None)
+    emotion = _choice(answers.get("emotion") or {})[0]
+    out["emotion"] = emotion if emotion in EMOTIONS else "calm"
+    key, sure = _choice(answers.get("intent") or {})
     if key not in JEV_INTENTS:
         return None
-    sure = probs.get(key, a.get("confidence", 0.0))
     out.update(intent_key=key, intent=JEV_INTENTS[key][1 if lang == "zh" else 0],
-               intent_certainty=round(float(sure), 2), certain=float(sure) >= JEV_ESCALATE)
+               intent_certainty=round(sure, 2), certain=sure >= JEV_ESCALATE)
     return out
+
+
+def _choice(a: dict) -> tuple[str | None, float]:
+    """A Choice answer's pick and its probability."""
+    probs = {k: float(p) for k, p in (a.get("probabilities") or {}).items()}
+    key = a.get("choice") or (max(probs, key=probs.get) if probs else None)
+    return key, float(probs.get(key, a.get("confidence", 0.0)))
 
 
 def decision_note(d: dict) -> str:
     """Jev's decision, as the LLM is told it."""
     w = d["words"]
-    return (f"\nJev's decision for this window (settled): intent \"{d['intent']}\"; comes across {w['confidence']}; "
-            f"{w['focus']}; {w['tension']}; tone {w['valence']}. "
+    top = sorted(d["traits"].items(), key=lambda kv: -kv[1])[:3]
+    return (f"\nJev's decision for this window (settled): intent \"{d['intent']}\"; emotion "
+            f"{EMOTIONS[d['emotion']][0].lower()} ({w['emotion_intensity']}); stands out: "
+            + ", ".join(w[k] for k, _ in top) + f"; tone {w['valence']}. "
             "Reply with only reading, quote and evidence, written to fit this decision.")
 
 

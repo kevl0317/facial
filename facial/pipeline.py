@@ -133,7 +133,7 @@ def run(opts: Options, report: Report | None = None) -> Result:
     # 3. Perception: MediaPipe on every sampled frame ----------------------------
     stat = video.stat()
     perception_key = {"video": str(video), "size": stat.st_size, "mtime": int(stat.st_mtime),
-                      "fps": opts.analysis_fps, "mirrored": opts.mirrored, "v": 2}
+                      "fps": opts.analysis_fps, "mirrored": opts.mirrored, "v": 3}
     report("perception", 0.0, "Running MediaPipe (face, hands/gestures, pose)...")
     samples = _cached(workdir / "samples.json", perception_key, opts.fresh,
                       lambda: run_perception(info, opts.analysis_fps, opts.mirrored,

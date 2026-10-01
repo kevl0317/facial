@@ -9,7 +9,7 @@ In both modes:
 
 - **Google MediaPipe** detects hands, gestures, face blendshapes and pose on each frame.
 - **Audio analysis** measures loudness, pitch, pauses and speech rate.
-- **An AI model** acts as the *judgment layer*: Claude by default, or GPT, DeepSeek, Gemini, Grok, Mistral, Qwen, Kimi, GLM, Groq, OpenRouter, a local Ollama model or any OpenAI-compatible API. It fuses five fields per time window (scene, speaker, subtitle, voice, gesture) into a reading, confidence/focus/tension scores, an intent label and an emotion arc.
+- **An AI model** acts as the *judgment layer*: Claude by default, or GPT, DeepSeek, Gemini, Grok, Mistral, Qwen, Kimi, GLM, Groq, OpenRouter, a local Ollama model or any OpenAI-compatible API. It fuses five fields per time window (scene, speaker, subtitle, voice, gesture) into a reading, a named emotion, eight trait scores, an intent label and an emotion arc.
 - A HUD is drawn over the picture.
 
 ```
@@ -26,12 +26,14 @@ What the overlay shows (same cartoon look live and in rendered videos):
 | Where | What |
 |---|---|
 | top chips | time, current window, shot type; live mode adds a LIVE / Thinking status chip |
-| top left | the hand label sticker, e.g. **Left hand · open palm (palm up)**, its MediaPipe confidence, and a pointer to the hand |
-| verdict card | Confident / Focused / Tense bars, the intent with its certainty, and Mood dots (one per window, coral → yellow → mint) |
+| top left | the live face expression, e.g. **Face · Happy** with a little cartoon face, then the hand label stickers, e.g. **Left hand · open palm (palm up)**, each with its MediaPipe score and a pointer to the hand |
+| verdict card | the window's emotion (a cartoon face, its name and strength), the three traits that stand out most out of eight (Confident, Nervous, Enthusiastic, Warm, Assertive, Defensive, Engaged, Hesitant), the intent with its certainty, and Mood dots (one per window, coral → yellow → mint) |
 | speech bubble | the judgment layer's reading for the window, with the most telling quote highlighted |
 | bottom | comic-style subtitles and a small "demo only" tag |
 
-Language `zh` switches the overlay and the judge's commentary to Chinese (综合判定 / 自信 / 专注 / 紧张 / 意图 / 情绪弧).
+**Emotions and traits.** The face sticker reads the expression straight from MediaPipe's 52 facial blendshapes, many times a second: neutral, happy, sad, surprised, angry, disgusted, fearful or contempt, from combinations of facial action units (a genuine smile raises the cheeks, disgust wrinkles the nose, fear stretches the mouth...). Muscles that often look tense at rest (brow, lips, eyes) are read relative to the person's own resting face, so a resting frown isn't anger. Each verdict then names one of 16 emotions (calm, happy, amused, excited, proud, interested, surprised, confused, skeptical, dismissive, frustrated, angry, sad, anxious, embarrassed, disgusted) from face, voice and words together, and scores eight traits where 0.5 is the speaker's usual self. These describe what a person *shows*, not what they feel; see Caveats. The definitions live in `facial/expressions.py`.
+
+Language `zh` switches the overlay and the judge's commentary to Chinese (综合判定 / 表情 / 自信 / 紧张 / 热情 / 意图 / 情绪弧).
 
 The GUI opens with a short hand-drawn animation (12 fps, frame by frame: the glove sketches itself in, waves, then an iris wipe opens the app; tap to skip). The theme uses the bundled [Fredoka](https://github.com/hafontia/Fredoka-One) font (SIL Open Font License, `facial/web/fonts/OFL.txt`).
 
@@ -68,7 +70,7 @@ Other AI providers take their usual key variable and `--judge <provider>`:
 [Jev](https://typesafe.ai) (TypeSafe AI, September 2026) is a "System One" decision model: instead of writing text it answers typed questions (a score on a scale, a choice between options) with calibrated probabilities, in well under a second. With Jev switched on:
 
 1. Each window's measurements are described in plain words (`facial/jev.py`, `describe()`), because Jev handles words better than numbers.
-2. Jev decides the Confident / Focused / Tense scores, the mood and the intent.
+2. Jev decides the emotion and its strength, the eight trait scores, the mood and the intent.
 3. The AI model only writes the one-line reading, the quote and the evidence, at low effort, so it thinks far less.
 4. When Jev is unsure of the intent (below 40%), that window goes back to the AI model to judge in full. Without an AI model, the words come from the rule templates.
 
@@ -190,7 +192,7 @@ Useful options: `--window 5` (target window length in seconds), `--analysis-fps 
 | **speaker** | jaw blendshape vs. audio loudness | `target` (on camera and talking), `listening`, `offscreen` or `silent`, plus lip-sync correlation |
 | **subtitle** | `.srt`/`.vtt`, faster-whisper, or live browser speech recognition | the words said in the window |
 | **voice** | librosa | loudness and pitch *relative to the speaker's own median*, pitch variability, voiced share, pauses, speech rate, fillers |
-| **gesture** | MediaPipe GestureRecognizer, FaceLandmarker, PoseLandmarker | dominant hand state (hand, shape, palm facing, axis), a short timeline of hand states, gesture energy, beat gestures, hand-to-face contact, head movement and gaze, 52 blendshapes condensed into smile / frown / brow / lip press (with deltas against the baseline), blink rate, posture |
+| **gesture** | MediaPipe GestureRecognizer, FaceLandmarker, PoseLandmarker | dominant hand state (hand, shape, palm facing, axis), a short timeline of hand states, gesture energy, beat gestures, hand-to-face contact, head movement and gaze, 52 blendshapes condensed into smile / frown / brow / lip press (with deltas against the baseline) and a face expression (top expression, its share of the window, runners-up), blink rate, posture |
 
 - **Hand shape** comes from MediaPipe's gesture classifier when it is confident, otherwise from finger geometry.
 - **Palm facing** (up / down / out / back / sideways) comes from the palm normal of the 3D hand landmarks, checked against the 2D winding.
@@ -217,6 +219,7 @@ facial/
   features.py    hand tracking, windowing, the five fields per window
   judge.py       judgment layer: Claude (Anthropic SDK), OpenAI-compatible providers, heuristic fallback
   providers.py   the AI providers: base URLs, default models, key variables
+  expressions.py emotions and traits the overlay names; face expression from blendshapes
   jev.py         Jev decision layer: window described in words, typed questions, /systemone client
   net.py         small JSON-over-HTTP helpers
   render.py      Pillow HUD overlay and video writing

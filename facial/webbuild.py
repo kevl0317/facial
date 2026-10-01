@@ -14,6 +14,7 @@ import json
 import shutil
 from pathlib import Path
 
+from .expressions import EMOTIONS, EXPRESSION_EMOTION, EXPRESSIONS, TRAITS
 from .jev import JEV_ESCALATE, JEV_INTENTS, JEV_QUESTIONS, JEV_ROUTES, JEV_SCALES
 from .judge import (DEFAULT_MODEL, FALLBACK_MODELS, JSON_RULE, LANGUAGE_RULES, SCHEMA, SYSTEM_PROMPT, WRITE_SCHEMA,
                     WRITER_RULE)
@@ -44,6 +45,10 @@ def prompt_js() -> str:
         f"export const JEV_INTENTS = {json.dumps(JEV_INTENTS, ensure_ascii=False)};",
         f"export const JEV_QUESTIONS = {json.dumps(JEV_QUESTIONS)};",
         f"export const JEV_ESCALATE = {json.dumps(JEV_ESCALATE)};",
+        f"export const EXPRESSIONS = {json.dumps(EXPRESSIONS, ensure_ascii=False)};",
+        f"export const EMOTIONS = {json.dumps(EMOTIONS, ensure_ascii=False)};",
+        f"export const EXPRESSION_EMOTION = {json.dumps(EXPRESSION_EMOTION)};",
+        f"export const TRAITS = {json.dumps(TRAITS, ensure_ascii=False)};",
     ]
     return "\n".join(parts) + "\n"
 

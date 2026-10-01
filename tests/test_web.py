@@ -214,10 +214,17 @@ def test_browser_judge_talks_to_other_providers_and_falls_back_to_rules():
 
 
 JEV_REPLY = {"answers": {
-    "confidence": {"type": "score", "score": 3.2, "confidence": 0.5},
-    "focus": {"type": "score", "probabilities": {"0": 0, "1": 0.1, "2": 0.5, "3": 0.4, "4": 0}},
-    "tension": {"type": "score", "score": 0.6},
+    "confident": {"type": "score", "score": 3.2, "confidence": 0.5},
+    "nervous": {"type": "score", "score": 0.6},
+    "enthusiastic": {"type": "score", "probabilities": {"0": 0, "1": 0.1, "2": 0.5, "3": 0.4, "4": 0}},
+    "warm": {"type": "score", "score": 2.9},
+    "assertive": {"type": "score", "score": 2.1},
+    "defensive": {"type": "score", "score": 1.0},
+    "engaged": {"type": "score", "score": 3.0},
+    "hesitant": {"type": "score", "score": 1.2},
     "valence": {"type": "score", "score": 2.5},
+    "emotion_intensity": {"type": "score", "score": 2.2},
+    "emotion": {"type": "choice", "choice": "interested", "confidence": 0.6},
     "intent": {"type": "choice", "choice": "explaining", "confidence": 0.7,
                "probabilities": {"explaining": 0.74, "stating": 0.26}}}}
 
@@ -259,8 +266,9 @@ BROWSER_JEV = """
   import { handLabel } from "./hud.js";
   const { feats, jevReply, mode } = JSON.parse((await import("node:fs")).readFileSync(0, "utf8"));
   const calls = [];
-  const reply = { reading: "Palm up, laying it out", quote: "a decision", evidence: ["palm"], confidence: 0.1,
-                  focus: 0.1, tension: 0.9, intent: "Deflecting", intent_certainty: 0.9, valence: -0.9 };
+  const reply = { reading: "Palm up, laying it out", quote: "a decision", evidence: ["palm"], emotion: "frustrated",
+                  emotion_intensity: 0.7, traits: { confident: 0.1, nervous: 0.9 }, intent: "Deflecting",
+                  intent_certainty: 0.9, valence: -0.9 };
   const fetchImpl = async (url, init) => {
     const body = JSON.parse(init.body);
     calls.push({ url, body });
@@ -305,7 +313,8 @@ def test_browser_jev_decides_and_the_llm_writes():
     assert "Jev's decision for this window (settled)" in llm_call["body"]["messages"][-1]["content"]
     first = out["first"]
     assert first["source"] == "jev" and first["writer"] == "deepseek" and first["intent"] == "Explaining"
-    assert first["reading"] == "Palm up, laying it out" and first["confidence"] == 0.8 and first["tension"] == 0.15
+    assert first["reading"] == "Palm up, laying it out" and first["traits"]["confident"] == 0.8
+    assert first["traits"]["nervous"] == 0.15 and first["emotion"] == "interested"
 
 
 @needs_node
@@ -343,3 +352,42 @@ def test_browser_jev_alone_writes_with_templates():
     out = _browser_jev("nollm")
     assert out["first"]["source"] == "jev" and "writer" not in out["first"]
     assert out["first"]["reading"] == "Right hand · open palm (palm up) — Explaining"
+
+
+EXPRESSION_FACES = {
+    "neutral": {"smile": 0.05, "jaw": 0.08, "squint": 0.2, "brow_furrow": 0.1},
+    "happy": {"smile": 0.7, "cheek_squint": 0.5, "jaw": 0.2},
+    "sad": {"frown": 0.45, "brow_inner_up": 0.45, "brow_furrow": 0.2},
+    "surprised": {"eye_wide": 0.6, "brow_outer_up": 0.6, "brow_inner_up": 0.5, "jaw": 0.5},
+    "angry": {"brow_furrow": 0.7, "lip_press": 0.5, "squint": 0.4},
+    "disgusted": {"nose_sneer": 0.6, "upper_lip_up": 0.4},
+    "fearful": {"eye_wide": 0.5, "brow_inner_up": 0.5, "mouth_stretch": 0.5},
+    "contempt": {"smile": 0.3, "smile_asym": 0.35},
+}
+
+
+@needs_node
+def test_face_expressions_are_read_the_same_in_python_and_browser():
+    from facial.expressions import expression_scores, summarize_expressions
+
+    base = {"brow_furrow": 0.45, "lip_press": 0.3, "squint": 0.3}  # someone with a stern resting face
+    stern = {"brow_furrow": 0.5, "lip_press": 0.35, "squint": 0.3, "smile": 0.02}
+    py = {k: expression_scores(f) for k, f in EXPRESSION_FACES.items()}
+    py["stern"] = expression_scores(stern, base)
+    py["summary"] = summarize_expressions(list(EXPRESSION_FACES.values()), base)
+
+    js = _node("""
+      import { readFileSync } from "node:fs";
+      import { expressionScores, summarizeExpressions } from "./expressions.js";
+      const { faces, stern, base } = JSON.parse(readFileSync(0, "utf8"));
+      const out = Object.fromEntries(Object.entries(faces).map(([k, f]) => [k, expressionScores(f)]));
+      out.stern = expressionScores(stern, base);
+      out.summary = summarizeExpressions(Object.values(faces), base);
+      console.log(JSON.stringify(out));
+    """, {"faces": EXPRESSION_FACES, "stern": stern, "base": base})
+
+    _close(py, js, tol=0.001)
+    for name, scores in py.items():
+        if name in EXPRESSION_FACES:
+            assert max(scores, key=scores.get) == name, (name, scores)
+    assert max(py["stern"], key=py["stern"].get) == "neutral"  # a resting frown isn't anger

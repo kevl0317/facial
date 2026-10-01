@@ -116,6 +116,15 @@ def _face_metrics(bs: dict[str, float]) -> dict[str, float]:
         "jaw": bs.get("jawOpen", 0.0),
         "gaze_side": max(avg("eyeLookOutLeft", "eyeLookInRight"), avg("eyeLookInLeft", "eyeLookOutRight")),
         "gaze_down": avg("eyeLookDownLeft", "eyeLookDownRight"),
+        # For expressions (expressions.py): cheek raise = genuine smile, sneer = disgust,
+        # inner-brow raise = sadness/worry, mouth stretch = fear, lopsided smile = contempt.
+        "cheek_squint": avg("cheekSquintLeft", "cheekSquintRight"),
+        "nose_sneer": avg("noseSneerLeft", "noseSneerRight"),
+        "upper_lip_up": avg("mouthUpperUpLeft", "mouthUpperUpRight"),
+        "brow_inner_up": bs.get("browInnerUp", 0.0),
+        "brow_outer_up": avg("browOuterUpLeft", "browOuterUpRight"),
+        "mouth_stretch": avg("mouthStretchLeft", "mouthStretchRight"),
+        "smile_asym": abs(bs.get("mouthSmileLeft", 0.0) - bs.get("mouthSmileRight", 0.0)),
     }
     return {k: round(v, 3) for k, v in metrics.items()}
 

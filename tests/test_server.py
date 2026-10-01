@@ -46,7 +46,8 @@ def test_live_window_roundtrip(client):
     assert win["subtitle"] == "We stuck with it."
     assert win["voice"]["voiced_frac"] > 0.3 and "pitch_rel_st" in win["voice"]
     assert win["gesture"]["dominant"]["shape"] == "open_palm"
-    assert judgment["source"] == "heuristic" and 0 <= judgment["confidence"] <= 1
+    assert judgment["source"] == "heuristic" and 0 <= judgment["traits"]["confident"] <= 1
+    assert judgment["emotion"] in ("calm", "happy") and "expression" in win["gesture"]["face"]
 
     # Second window continues the session.
     body2 = dict(body, start=5.0, end=10.0, samples=[dict(s, t=s["t"] + 5.0) for s in samples], transcript=[])

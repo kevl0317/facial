@@ -17,19 +17,20 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .features import shot_type
+from .expressions import EMOTIONS, EXPRESSIONS, TRAITS, expression_scores
+from .features import clip_baseline, shot_type
 from .media import VideoInfo, VideoWriter
 from .providers import judge_label, judge_tag
 
 STRINGS = {
     "en": {
-        "left": "Left hand", "right": "Right hand", "verdict": "Verdict", "confidence": "Confident",
-        "focus": "Focused", "tension": "Tense", "intent": "Intent", "arc": "Mood", "vision": "VISION",
+        "left": "Left hand", "right": "Right hand", "face": "Face", "verdict": "Verdict",
+        "intent": "Intent", "arc": "Mood", "vision": "VISION",
         "rules": "Rules", "footer": "MediaPipe · {judge} · demo only",
     },
     "zh": {
-        "left": "左手", "right": "右手", "verdict": "综合判定", "confidence": "自信",
-        "focus": "专注", "tension": "紧张", "intent": "意图", "arc": "情绪弧", "vision": "VISION",
+        "left": "左手", "right": "右手", "face": "表情", "verdict": "综合判定",
+        "intent": "意图", "arc": "情绪弧", "vision": "VISION",
         "rules": "规则", "footer": "MediaPipe · {judge} · 仅供演示",
     },
 }
@@ -60,6 +61,13 @@ YELLOW = (255, 200, 61)
 CORAL = (255, 107, 107)
 MINT = (51, 209, 160)
 HAND_COLOURS = (YELLOW, MINT)  # pointer + dot colour per hand label
+ORANGE = (255, 159, 67)
+SKY = (127, 211, 255)
+GLYPH_FILLS = {"paper": PAPER, "yellow": YELLOW, "sky": SKY, "coral": CORAL, "mint": MINT, "orange": ORANGE,
+               "blue": BLUE}
+# One colour per trait, so a bar is recognisable at a glance (TRAIT_COLOURS in hud.js).
+TRAIT_COLOURS = {"confident": BLUE, "nervous": CORAL, "enthusiastic": ORANGE, "warm": YELLOW,
+                 "assertive": BLUE, "defensive": CORAL, "engaged": MINT, "hesitant": SKY}
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11),
               (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)]
@@ -171,6 +179,7 @@ class Overlay:
         self.str = STRINGS[lang]
         ai = next((j for j in judgments if j["source"] != "heuristic"), {"source": "heuristic"})
         self.judge_name = judge_label(ai, self.str["rules"])
+        self.base = clip_baseline(samples)  # the person's resting face, for the expression reading
 
     # -- lookups -------------------------------------------------------------
     def _window(self, t: float) -> int:
@@ -235,11 +244,26 @@ class Overlay:
         # Top label = leftmost hand on screen, so the two pointers don't cross.
         return sorted(out, key=lambda h: h["anchor"][0] if h["anchor"] else 2.0)
 
+    def _live_face(self, t: float) -> dict | None:
+        """The face expression over the last 0.8 s (same as live.js liveFace)."""
+        i0 = bisect.bisect_left(self.sample_t, t - 0.8)
+        i1 = bisect.bisect_right(self.sample_t, t)
+        faces = [s["face"] for s in self.samples[i0:i1] if s["face"]]
+        if not faces or "bbox" not in faces[-1]:
+            return None
+        mean = dict.fromkeys(EXPRESSIONS, 0.0)
+        for f in faces:
+            for key, p in expression_scores(f, self.base).items():
+                mean[key] += p / len(faces)
+        top = max(EXPRESSIONS, key=lambda key: mean[key])
+        return {"top": top, "score": mean[top], "bbox": faces[-1]["bbox"]}
+
     def _value(self, k: int, key: str, t: float) -> float:
-        cur = self.judgments[k][key]
+        """A trait of window k, easing in from the previous window's value."""
+        cur = self.judgments[k]["traits"][key]
         if k == 0:
             return cur
-        prev = self.judgments[k - 1][key]
+        prev = self.judgments[k - 1]["traits"][key]
         return prev + (cur - prev) * _smoothstep((t - self.windows[k]["start"]) / 0.6)
 
     # -- primitives ----------------------------------------------------------
@@ -264,6 +288,51 @@ class Overlay:
         self._sticker(d, x, cy - h / 2, w, h, h / 2, fill=fill, shadow=shadow, line=line)
         d.text((x + pad * u, cy + 0.5 * u), text, font=font, fill=color, anchor="lm")
         return w
+
+    def _glyph(self, d, cx, cy, r, glyph):
+        """A small cartoon face for an expression or emotion (drawGlyph in hud.js)."""
+        mouth, brows, fill = glyph
+        u = self.u
+        lw = max(1, int(round(max(1.3 * u, 0.15 * r))))
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GLYPH_FILLS.get(fill, PAPER), outline=INK,
+                  width=max(1, int(round(max(1.8 * u, 0.16 * r)))))
+        for sx in (-1, 1):
+            e = 0.12 * r
+            d.ellipse([cx + sx * 0.36 * r - e, cy - 0.12 * r - e, cx + sx * 0.36 * r + e, cy - 0.12 * r + e], fill=INK)
+
+        def at(sx, dx, dy):
+            return (cx + sx * dx * r, cy + dy * r)
+
+        for sx in (-1, 1):
+            if brows == "sad":
+                d.line([at(sx, 0.6, -0.38), at(sx, 0.18, -0.54)], fill=INK, width=lw)
+            elif brows == "angry":
+                d.line([at(sx, 0.6, -0.56), at(sx, 0.16, -0.38)], fill=INK, width=lw)
+            elif brows == "up" or (brows == "one" and sx > 0):
+                d.line([at(sx, 0.58, -0.56), at(sx, 0.16, -0.62)], fill=INK, width=lw)
+            elif brows == "one":
+                d.line([at(sx, 0.58, -0.45), at(sx, 0.16, -0.45)], fill=INK, width=lw)
+        my = cy + 0.36 * r
+        if mouth == "smile":
+            m = 0.46 * r
+            d.arc([cx - m, cy + 0.05 * r - m, cx + m, cy + 0.05 * r + m], 36, 144, fill=INK, width=lw)
+        elif mouth == "grin":
+            m = 0.42 * r
+            d.chord([cx - m, cy + 0.18 * r - m, cx + m, cy + 0.18 * r + m], 0, 180, fill=INK)
+        elif mouth == "frown":
+            m = 0.42 * r
+            d.arc([cx - m, cy + 0.78 * r - m, cx + m, cy + 0.78 * r + m], 225, 315, fill=INK, width=lw)
+        elif mouth == "o":
+            m = 0.17 * r
+            d.ellipse([cx - m, my + 0.02 * r - m, cx + m, my + 0.02 * r + m], outline=INK, width=lw)
+        elif mouth == "wavy":
+            d.line([(cx - 0.36 * r, my), (cx - 0.18 * r, my - 0.1 * r), (cx, my), (cx + 0.18 * r, my - 0.1 * r),
+                    (cx + 0.36 * r, my)], fill=INK, width=lw, joint="curve")
+        elif mouth == "smirk":
+            d.line([(cx - 0.3 * r, my + 0.04 * r), (cx + 0.18 * r, my), (cx + 0.34 * r, my - 0.14 * r)], fill=INK,
+                   width=lw, joint="curve")
+        else:
+            d.line([(cx - 0.3 * r, my), (cx + 0.3 * r, my)], fill=INK, width=lw)
 
     # -- drawing -------------------------------------------------------------
     def draw(self, frame_bgr: np.ndarray, t: float) -> np.ndarray:
@@ -298,13 +367,19 @@ class Overlay:
         self._pill(d, x, cy, shot_type(sample["face"]["size"] if sample and sample["face"] else None), weight=600)
 
     def _draw_gesture(self, d, t):
-        """One sticker per hand (up to two), each with a colour-matched pointer to its hand."""
+        """A sticker for the face expression, then one per hand (up to two), each with a pointer."""
         hands = self._live_hands(t)
         u, W, H = self.u, self.W, self.H
         x, y = 14 * u, 46 * u
+        entries = []
+        face = self._live_face(t)
+        if face:
+            name = EXPRESSIONS[face["top"]]  # no pointer: one face, and the line would only add clutter
+            entries.append(({"score": face["score"], "anchor": None, "glyph": name[2]},
+                            f"{self.str['face']} · {name[1 if self.lang == 'zh' else 0]}", BLUE))
+        entries += [(hand, hand_label(hand, self.lang), colour) for hand, colour in zip(hands, HAND_COLOURS)]
         items = []
-        for hand, colour in zip(hands, HAND_COLOURS):
-            label = hand_label(hand, self.lang)
+        for hand, label, colour in entries:
             size = 19 * u
             font = self.fonts.get(700, size, label)
             while d.textlength(label, font=font) > W - 2 * x - 40 * u and size > 11:
@@ -326,14 +401,17 @@ class Overlay:
         for hand, label, font, w, h, top, colour in items:
             self._sticker(d, x, top, w, h, 14 * u, shadow=3)
             cx, cy, r = x + 16 * u, top + h / 2, 6 * u
-            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=colour, outline=INK, width=self._px(2))
+            if hand.get("glyph"):
+                self._glyph(d, cx, cy, 8 * u, hand["glyph"])
+            else:
+                d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=colour, outline=INK, width=self._px(2))
             d.text((x + 28 * u, cy + 0.5 * u), label, font=font, fill=INK, anchor="lm")
             self._pill(d, x + 8 * u, top + h + 16 * u, f"{self.str['vision']} {hand['score']:.2f}", size=11,
                        fill=BLUE, color=WHITE)
 
     def _panel_geometry(self):
         u = self.u
-        ph = 178 * u
+        ph = 206 * u
         if self.portrait:
             pw = min(self.W - 28 * u, 300 * u)
             return self.W - pw - 14 * u, 0.0, pw, ph
@@ -343,6 +421,7 @@ class Overlay:
     def _draw_panel(self, d, t, k, x0, y0, pw, ph):
         u, s = self.u, self.str
         j = self.judgments[k]
+        zh = 1 if self.lang == "zh" else 0
         self._sticker(d, x0, y0, pw, ph, 18 * u)
 
         title_font = self.fonts.get(700, 18 * u, s["verdict"])
@@ -351,24 +430,37 @@ class Overlay:
         self._pill(d, x0 + 22 * u + d.textlength(s["verdict"], font=title_font), y0 + 22 * u, tag, size=11,
                    fill=YELLOW)
 
-        bars = (("confidence", BLUE), ("focus", MINT), ("tension", CORAL))
-        label_fonts = {key: self.fonts.get(600, 13 * u, s[key]) for key, _ in bars}
-        label_w = max(d.textlength(s[key], font=f) for key, f in label_fonts.items())
+        # The emotion: a cartoon face, its name and how strongly it shows.
+        cy = y0 + 54 * u
+        emotion = EMOTIONS[j["emotion"]]
+        self._glyph(d, x0 + 27 * u, cy, 13 * u, emotion[3])
+        inten = f"{j['emotion_intensity']:.2f}"
+        inten_w = d.textlength(inten, font=self.fonts.get(700, 11 * u)) + 16 * u
+        self._pill(d, x0 + pw - 14 * u - inten_w, cy, inten, size=11, fill=ORANGE)
+        name_font = self.fonts.get(700, 19 * u, emotion[zh])
+        line = wrap(d, emotion[zh], name_font, pw - 72 * u - inten_w, 1)
+        d.text((x0 + 48 * u, cy), line[0] if line else "", font=name_font, fill=INK, anchor="lm")
+
+        # The three traits that stand out most in this window.
+        labels = {key: v[zh] for key, v in TRAITS.items()}
+        label_font = self.fonts.get(600, 13 * u, "".join(labels.values()))
+        label_w = max(d.textlength(text, font=label_font) for text in labels.values())
         bx0 = x0 + 24 * u + label_w
         bx1 = max(x0 + pw - 50 * u, bx0 + 4 * u)  # fonts have a minimum size, so tiny frames can squeeze this
         value_font = self.fonts.get(700, 13 * u)
-        for i, (key, colour) in enumerate(bars):
-            cy = y0 + 52 * u + i * 25 * u
-            d.text((x0 + 14 * u, cy), s[key], font=label_fonts[key], fill=MUTED, anchor="lm")
+        top = sorted(j["traits"].items(), key=lambda kv: -kv[1])[:3]
+        for i, (key, _) in enumerate(top):
+            cy = y0 + 88 * u + i * 25 * u
+            d.text((x0 + 14 * u, cy), labels[key], font=label_font, fill=MUTED, anchor="lm")
             v = self._value(k, key, t)
             self._rr(d, bx0, cy - 6 * u, bx1, cy + 6 * u, 6 * u, fill=PAPER)
             fill_w = (bx1 - bx0) * v
             if fill_w >= 2:
-                self._rr(d, bx0, cy - 6 * u, bx0 + fill_w, cy + 6 * u, 6 * u, fill=colour)
+                self._rr(d, bx0, cy - 6 * u, bx0 + fill_w, cy + 6 * u, 6 * u, fill=TRAIT_COLOURS[key])
             self._rr(d, bx0, cy - 6 * u, bx1, cy + 6 * u, 6 * u, outline=INK, width=self._px(2))
             d.text((bx1 + 8 * u, cy), f"{v:.2f}", font=value_font, fill=INK, anchor="lm")
 
-        cy = y0 + 52 * u + 3 * 25 * u + 2 * u
+        cy = y0 + 88 * u + 3 * 25 * u + 2 * u
         d.text((x0 + 14 * u, cy), s["intent"], font=self.fonts.get(600, 12 * u, s["intent"]), fill=MUTED,
                anchor="lm")
         cert = f"{j['intent_certainty']:.2f}"

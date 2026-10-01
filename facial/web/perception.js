@@ -77,6 +77,15 @@ function faceMetrics(categories) {
     jaw: bs.jawOpen ?? 0,
     gaze_side: Math.max(avg("eyeLookOutLeft", "eyeLookInRight"), avg("eyeLookInLeft", "eyeLookOutRight")),
     gaze_down: avg("eyeLookDownLeft", "eyeLookDownRight"),
+    // For expressions (expressions.js): cheek raise = genuine smile, sneer = disgust,
+    // inner-brow raise = sadness/worry, mouth stretch = fear, lopsided smile = contempt.
+    cheek_squint: avg("cheekSquintLeft", "cheekSquintRight"),
+    nose_sneer: avg("noseSneerLeft", "noseSneerRight"),
+    upper_lip_up: avg("mouthUpperUpLeft", "mouthUpperUpRight"),
+    brow_inner_up: bs.browInnerUp ?? 0,
+    brow_outer_up: avg("browOuterUpLeft", "browOuterUpRight"),
+    mouth_stretch: avg("mouthStretchLeft", "mouthStretchRight"),
+    smile_asym: Math.abs((bs.mouthSmileLeft ?? 0) - (bs.mouthSmileRight ?? 0)),
   };
   for (const k of Object.keys(m)) m[k] = round(m[k], 3);
   return m;
