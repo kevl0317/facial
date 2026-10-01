@@ -4,8 +4,8 @@
 import { Anthropic } from "./vendor/anthropic-sdk.mjs";
 import { JevClient, decisionNote } from "./jev.js";
 import {
-  DEFAULT_MODEL, FALLBACK_MODELS, JEV_INTENTS, JSON_RULE, LANGUAGE_RULES, OPENAI_REASONING, PROVIDERS, SCHEMA,
-  SYSTEM_PROMPT, THINKING_MODELS, WRITE_SCHEMA, WRITER_RULE,
+  DEFAULT_MODEL, EMOTIONS, EXPRESSION_EMOTION, FALLBACK_MODELS, JEV_INTENTS, JSON_RULE, LANGUAGE_RULES, OPENAI_REASONING,
+  PROVIDERS, SCHEMA, SYSTEM_PROMPT, THINKING_MODELS, TRAITS, WRITE_SCHEMA, WRITER_RULE,
 } from "./prompt.js";
 
 export { PROVIDERS };
@@ -18,11 +18,18 @@ const clamp = (v, lo = 0, hi = 1) => {
   return Math.round((Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : (lo + hi) / 2) * 100) / 100;
 };
 
+/** The n traits that show most (ties keep TRAITS order); top_traits in judge.py. */
+export const topTraits = (traits, n = 3) => Object.entries(traits).sort((a, b) => b[1] - a[1]).slice(0, n);
+
 export function normalise(j, source, writer = null) {
+  const emotion = String(j.emotion ?? "").trim().toLowerCase();
+  const traits = j.traits && typeof j.traits === "object" ? j.traits : {};
   const out = {
     reading: String(j.reading ?? "").trim(),
     quote: String(j.quote ?? "").trim().replace(/^["“”]+|["“”]+$/g, ""),
-    confidence: clamp(j.confidence), focus: clamp(j.focus), tension: clamp(j.tension),
+    emotion: emotion in EMOTIONS ? emotion : "calm",
+    emotion_intensity: clamp(j.emotion_intensity),
+    traits: Object.fromEntries(Object.keys(TRAITS).map((k) => [k, clamp(traits[k])])),
     intent: String(j.intent ?? "").trim(), intent_certainty: clamp(j.intent_certainty),
     valence: clamp(j.valence, -1, 1),
     evidence: (j.evidence || []).slice(0, 4).map(String),
@@ -55,22 +62,46 @@ function quoteOf(text) {
 /** Transparent rule-based scores (heuristic_judgment in judge.py). */
 export function heuristicJudgment(f, lang = "en", handLabel = null) {
   const voice = f.voice, g = f.gesture, spk = f.speaker;
-  const face = g.face || {}, head = g.head || {}, rel = face.vs_baseline || {};
+  const face = g.face || {}, head = g.head || {}, posture = g.posture || {}, rel = face.vs_baseline || {};
   const dom = g.dominant;
-  const blink = face.blink_per_min ?? 17;
   const get = (o, k, d = 0) => (o[k] ?? d);
+  const blink = get(face, "blink_per_min", 17);
+  const gazeAway = get(head, "gaze_away", 0.2);
+  const loud = get(voice, "loudness_rel_db");
+  const beats = Math.min(get(g, "beats"), 3);
+  const pauses = get(voice, "pauses"), fillers = get(voice, "fillers");
+  const touch = get(g, "hand_to_face");
+  const arms = posture.arms_open;
 
-  const tension = 0.15 + Math.max(0, get(rel, "lip_press")) + 0.8 * Math.max(0, get(rel, "brow_furrow"))
-    + 0.5 * get(g, "hand_to_face") + 0.006 * Math.max(0, blink - 22)
-    + 0.05 * get(voice, "pauses") + 0.05 * get(voice, "fillers") + 0.04 * Math.max(0, get(voice, "pitch_var_st", 2) - 3);
   const open = dom && ["open_palm", "pointing", "fist"].includes(dom.shape) ? 1 : 0;
+  const forceful = dom && ["fist", "pointing"].includes(dom.shape) ? 1 : 0;
   const steadiness = 1 - Math.min(1, (get(head, "yaw_std", 5) + get(head, "pitch_std", 5)) / 20);
-  const confidence = 0.45 + 0.03 * get(voice, "loudness_rel_db") + 0.12 * open + 0.1 * steadiness
-    - 0.25 * get(head, "gaze_away") - 0.3 * (tension - 0.15) + 0.05 * Math.min(get(g, "beats"), 3);
-  const focus = 0.45 + 0.3 * (1 - get(head, "gaze_away", 0.3)) + 0.1 * steadiness + 0.1 * get(voice, "voiced_frac")
-    - 0.2 * get(g, "hand_to_face");
+  const nervous = 0.35 + Math.max(0, get(rel, "lip_press")) + 0.8 * Math.max(0, get(rel, "brow_furrow")) + 0.5 * touch
+    + 0.006 * Math.max(0, blink - 22) + 0.05 * pauses + 0.05 * fillers
+    + 0.04 * Math.max(0, get(voice, "pitch_var_st", 2) - 3);
+  const traits = {
+    confident: 0.45 + 0.03 * loud + 0.12 * open + 0.1 * steadiness - 0.25 * gazeAway - 0.3 * (nervous - 0.35) + 0.05 * beats,
+    nervous,
+    enthusiastic: 0.35 + 0.1 * Math.min(get(g, "energy"), 3) + 0.04 * Math.max(0, get(voice, "pitch_var_st", 2) - 2)
+      + 0.6 * Math.max(0, get(rel, "smile")) + 0.04 * beats + 0.02 * Math.max(0, loud)
+      + (get(voice, "speech_rate_wps") > 3 ? 0.05 : 0),
+    warm: 0.4 + 0.3 * get(face, "smile") + 0.8 * get(rel, "smile") + 0.03 * Math.min(get(head, "nods"), 3)
+      - 0.8 * Math.max(0, get(rel, "frown")) - 0.4 * Math.max(0, get(rel, "brow_furrow")),
+    assertive: 0.4 + 0.03 * loud + 0.15 * forceful + 0.04 * beats + 0.08 * steadiness - 0.2 * gazeAway - 0.04 * pauses,
+    defensive: 0.3 + (arms != null && arms <= 0.25 ? 0.2 : 0) + 0.4 * touch + 0.6 * Math.max(0, get(rel, "lip_press"))
+      + 0.25 * gazeAway + 0.3 * Math.max(0, get(rel, "brow_furrow")),
+    engaged: 0.45 + 0.3 * (1 - gazeAway) + 0.1 * steadiness + 0.1 * get(voice, "voiced_frac") - 0.2 * touch,
+    hesitant: 0.3 + 0.07 * pauses + 0.08 * fillers + 0.25 * gazeAway
+      + (spk.state === "target" && get(voice, "voiced_frac") < 0.4 ? 0.15 : 0),
+  };
   const valence = 0.6 * get(face, "smile") - 0.6 * get(face, "frown") + 1.5 * get(rel, "smile") - 1.5 * get(rel, "frown")
     - 0.5 * get(rel, "brow_furrow");
+
+  // The emotion is what the face shows, when it clearly shows something.
+  const expr = face.expression || {};
+  const shown = (expr.top || "neutral") !== "neutral" && (expr.share || 0) >= 0.25;
+  const emotion = shown ? EXPRESSION_EMOTION[expr.top] : "calm";
+  const emotionIntensity = shown ? expr.share : 0.3;
 
   const text = f.subtitle;
   let key;
@@ -85,9 +116,9 @@ export function heuristicJudgment(f, lang = "en", handLabel = null) {
   if (gestureText && g.second) gestureText += ` + ${handLabel(g.second)}`;
   const reading = gestureText ? `${gestureText}${lang === "zh" ? "，" : " — "}${intent}` : intent;
   return normalise({
-    reading, quote: text ? quoteOf(text) : "", confidence, focus, tension, intent,
+    reading, quote: text ? quoteOf(text) : "", emotion, emotion_intensity: emotionIntensity, traits, intent,
     intent_certainty: key !== "default" ? 0.45 : 0.3, valence,
-    evidence: ["rule-based: blendshapes, head motion, voice, hand shape"],
+    evidence: ["rule-based: face expression, blendshapes, head motion, voice, hand shape"],
   }, "heuristic");
 }
 
@@ -112,7 +143,8 @@ export function extractJson(text) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SCORE_KEYS = ["confidence", "focus", "tension", "valence", "intent", "intent_certainty"];
+// The parts of a judgment a decision settles (DECISION_KEYS in judge.py); the rest is words.
+const SCORE_KEYS = ["emotion", "emotion_intensity", "traits", "valence", "intent", "intent_certainty"];
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 
 /** One conversation per session, one window per turn (BaseJudge in judge.py). */
@@ -140,8 +172,9 @@ class ConversationJudge {
     if (clip.baseline && Object.keys(clip.baseline).length) text += `Clip baselines (medians): ${JSON.stringify(clip.baseline)}\n`;
     if (this.history.length) {
       text += "Earlier windows, summarised (most recent last):\n" + this.history.slice(-6).map((h) =>
-        `- W${h.window}: ${h.intent} | confidence ${h.confidence.toFixed(2)}, focus ${h.focus.toFixed(2)}, `
-        + `tension ${h.tension.toFixed(2)}, valence ${h.valence >= 0 ? "+" : ""}${h.valence.toFixed(2)} | ${h.reading}`).join("\n") + "\n";
+        `- W${h.window}: ${h.intent} | ${h.emotion} ${h.emotion_intensity.toFixed(2)} | `
+        + topTraits(h.traits).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(", ")
+        + `, valence ${h.valence >= 0 ? "+" : ""}${h.valence.toFixed(2)} | ${h.reading}`).join("\n") + "\n";
     }
     return `${text}\n`;
   }
@@ -357,7 +390,7 @@ class JevJudge {
       reading: gesture ? `${gesture}${this.lang === "zh" ? "，" : " — "}${d.intent}` : d.intent,
       quote: feats.subtitle ? quoteOf(feats.subtitle) : "",
       evidence: [`Jev: ${JEV_INTENTS[d.intent_key][0]} (${d.intent_certainty.toFixed(2)})`,
-        `Jev: ${w.confidence}, ${w.focus}, ${w.tension}, ${w.valence}`],
+        `Jev: ${d.emotion} (${w.emotion_intensity}); ${topTraits(d.traits).map(([k]) => w[k]).join(", ")}`],
     };
   }
 

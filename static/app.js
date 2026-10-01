@@ -3,7 +3,8 @@ import { handSvg } from "./hand.js";
 import { Dropdown } from "./dropdown.js";
 import { playIntro } from "./intro.js";
 import { JEV_ROUTES } from "./jev.js";
-import { PROVIDERS, judgeReady, listModels } from "./judge.js";
+import { PROVIDERS, judgeReady, listModels, topTraits } from "./judge.js";
+import { EMOTIONS, TRAITS } from "./prompt.js";
 import { LiveEngine, loadTasks } from "./live.js";
 import { parseSubtitles } from "./srt.js";
 import qrcode from "./vendor/qrcode.mjs";
@@ -44,16 +45,15 @@ async function api(path, { method = "GET", body } = {}) {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
-function windowItem(win, j) {
+function windowItem(win, j, zh = false) {
   const li = document.createElement("li");
   li.innerHTML = `
     <div class="head"><span class="w">W${win.window}</span><span class="intent">${esc(j.intent)}</span>
       <span class="time">${fmt(win.start)}–${fmt(win.end)}</span></div>
     <div class="reading">${esc(j.reading)}</div>
     ${j.quote ? `<div class="quote">“${esc(j.quote)}”</div>` : ""}
-    <div class="scores"><span class="s-c" title="Confident">C ${j.confidence.toFixed(2)}</span>
-      <span class="s-f" title="Focused">F ${j.focus.toFixed(2)}</span>
-      <span class="s-t" title="Tense">T ${j.tension.toFixed(2)}</span></div>`;
+    <div class="scores"><span class="s-e">${esc(EMOTIONS[j.emotion]?.[zh ? 1 : 0] ?? j.emotion)} ${j.emotion_intensity.toFixed(2)}</span>
+      ${topTraits(j.traits).map(([k, v]) => `<span class="s-t">${esc(TRAITS[k][zh ? 1 : 0])} ${v.toFixed(2)}</span>`).join("")}</div>`;
   return li;
 }
 
@@ -361,7 +361,7 @@ async function startLive() {
   $("#windowLog").innerHTML = "";
   engine = new LiveEngine({
     canvas: $("#stage"), api, mode: CONFIG.mode, onStatus: toast,
-    onWindow: ({ window: win, judgment }) => $("#windowLog").prepend(windowItem(win, judgment)),
+    onWindow: ({ window: win, judgment }) => $("#windowLog").prepend(windowItem(win, judgment, live.lang === "zh")),
   });
   try {
     await engine.start({ ...live, ...ai(), ...jevSettings(), audioCtx });
@@ -470,7 +470,7 @@ async function analyzeInBrowser(form, audioCtx) {
       $("#tapPlay").hidden = m !== "tap-to-play";
       $("#playerStatus").textContent = m === "tap-to-play" ? "" : m || "";
     },
-    onWindow: ({ window: win, judgment }) => $("#playerLog").prepend(windowItem(win, judgment)),
+    onWindow: ({ window: win, judgment }) => $("#playerLog").prepend(windowItem(win, judgment, fileLang === "zh")),
     onEnd: ({ blob, results }) => showLocalResult(blob, results, file.name),
   });
   try {
@@ -539,7 +539,7 @@ function fillWindows(windows, video) {
   const list = $("#resultWindows");
   list.innerHTML = "";
   for (const w of windows) {
-    const li = windowItem(w, w.judgment);
+    const li = windowItem(w, w.judgment, fileLang === "zh");
     li.tabIndex = 0;
     const seek = () => { video.currentTime = w.start; video.play().catch(() => {}); };
     li.addEventListener("click", seek);

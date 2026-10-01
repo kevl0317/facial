@@ -7,6 +7,8 @@ import { Hud, STRINGS, handLabel, judgeLabel } from "./hud.js";
 import { clipBaseline, shotType, windowFeatures } from "./features.js";
 import { VoiceAnalyzer, resampleTo16k } from "./voice.js";
 import { BrowserJudge } from "./judge.js";
+import { expressionScores } from "./expressions.js";
+import { EXPRESSIONS } from "./prompt.js";
 
 const asset = (path) => new URL(path, document.baseURI).href;
 const VENDOR = "models/web/tasks-vision";
@@ -560,6 +562,7 @@ export class LiveEngine {
       const sample = buildSample(t, face, hands, this.lastPose, v.videoWidth, v.videoHeight, false);
       this.tracker.update(sample, v.videoWidth / v.videoHeight);
       this.recent.push(sample);
+      if (sample.face) this.trackFaceBaseline(sample);
       while (this.recent.length && this.recent[0].t < t - 1.0) this.recent.shift();
       if (t - this.lastSampleT >= 1 / SAMPLE_FPS - 0.005) {
         this.lastSampleT = t;
@@ -579,6 +582,26 @@ export class LiveEngine {
 
   /** Up to two hands: the most active tracks over the last 0.8 s, each with its most common
    * state over the last 0.4 s. A second hand needs to show in 40% of recent frames (no flicker). */
+  /** The person's resting face (medians of recent frames), so a resting frown isn't read as anger. */
+  trackFaceBaseline(sample) {
+    this.faceFrames = this.faceFrames || [];
+    this.faceFrames.push({ face: sample.face });
+    if (this.faceFrames.length > 400) this.faceFrames.shift();
+    this.faceCount = (this.faceCount || 0) + 1;
+    if (this.faceCount % 30 === 1) this.faceBase = clipBaseline(this.faceFrames);
+  }
+
+  /** The face expression over the last ~0.8 s: its name, share and a pointer target. */
+  liveFace(t) {
+    const faces = this.recent.filter((s) => s.t >= t - 0.8 && s.face).map((s) => s.face);
+    if (!faces.length || !faces[faces.length - 1].bbox) return null;
+    const mean = {};
+    for (const f of faces) for (const [k, p] of Object.entries(expressionScores(f, this.faceBase || {}))) mean[k] = (mean[k] || 0) + p / faces.length;
+    let top = "neutral";
+    for (const k of Object.keys(mean)) if (mean[k] > mean[top]) top = k;
+    return { top, score: mean[top], bbox: faces[faces.length - 1].bbox };
+  }
+
   liveHands(t) {
     const weights = new Map();
     for (const s of this.recent) {
@@ -662,12 +685,21 @@ export class LiveEngine {
       total: this.isFile ? this.total : null,
       shot: shotType(latest && latest.face ? latest.face.size : null),
       hands: this.liveHands(t).map((h) => ({ label: handLabel(h, this.opts.lang), score: h.score, anchor: h.anchor && toPx(h.anchor) })),
+      face: this.faceSticker(t),
       subtitle: this.subtitleAt(t),
       judge: this.hud.judgments.length ? judgeLabel(this.hud.judgments[this.hud.judgments.length - 1], this.s.rules)
         : this.judgeLabel,
       status,
       skeleton,
     }, this.isFile ? u : undefined);
+  }
+
+  faceSticker(t) {
+    const f = this.liveFace(t);
+    if (!f) return null;
+    const e = EXPRESSIONS[f.top];
+    // No pointer: there's one face, and a line across the picture would only add clutter.
+    return { label: `${this.s.face} · ${e[this.opts.lang === "zh" ? 1 : 0]}`, score: f.score, glyph: e[2], anchor: null };
   }
 
   subtitleAt(t) {
